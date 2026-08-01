@@ -77,6 +77,8 @@ function qEscape(name) {
 
 let accessToken = null;
 let tokenClient = null;
+let erneuerungsTimer = null;
+let autoLoginVersuch = false; // true waehrend eines automatischen (stillen) Login-Versuchs
 
 function initAuth() {
   if (typeof google === "undefined" || !google.accounts) {
@@ -90,13 +92,42 @@ function initAuth() {
     scope: DRIVE_SCOPE,
     callback: (resp) => {
       if (resp.error) {
-        zeigeAnmeldeFehler(resp.error);
+        // Beim automatischen Versuch beim App-Start ist ein Fehlschlag normal
+        // (z.B. beim allerersten Aufruf, oder wenn der Zugriff widerrufen
+        // wurde) - dann einfach den normalen Login-Button zeigen, keine
+        // Fehlermeldung. Nur bei einem bewussten Klick zeigen wir den Fehler.
+        if (!autoLoginVersuch) zeigeAnmeldeFehler(resp.error);
         return;
       }
       accessToken = resp.access_token;
+      planeTokenErneuerung(resp.expires_in);
       aufAnmeldungReagieren();
     },
   });
+
+  // Automatischer, stiller Login-Versuch direkt beim App-Start: Ist der
+  // Nutzer in diesem Browser (bzw. dieser Home-Bildschirm-Verknuepfung)
+  // noch bei Google angemeldet und hat frueher schon zugestimmt, bekommt
+  // die App ohne Tap ein frisches Token - fuehlt sich wie "eingeloggt
+  // bleiben" an, obwohl technisch bei jedem Start ein neues Token geholt wird.
+  // Nach einem bewussten "Abmelden" wird das bewusst uebersprungen, sonst
+  // waere man sofort wieder eingeloggt.
+  if (localStorage.getItem("dashboard_abgemeldet") !== "1") {
+    autoLoginVersuch = true;
+    tokenClient.requestAccessToken({ prompt: "" });
+  }
+}
+
+// Holt rechtzeitig vor Ablauf (2 Minuten Puffer) im Hintergrund ein neues
+// Token, damit eine laenger offene Seite nicht mitten in der Nutzung auf
+// den Login-Screen zurueckfaellt.
+function planeTokenErneuerung(gueltigSekunden) {
+  clearTimeout(erneuerungsTimer);
+  const wartezeitMs = Math.max((gueltigSekunden || 3600) - 120, 30) * 1000;
+  erneuerungsTimer = setTimeout(() => {
+    autoLoginVersuch = true;
+    tokenClient.requestAccessToken({ prompt: "" });
+  }, wartezeitMs);
 }
 
 function zeigeAnmeldeFehler(fehler) {
@@ -108,7 +139,9 @@ function zeigeAnmeldeFehler(fehler) {
 async function driveFetchJson(url) {
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   if (resp.status === 401) {
-    // Token abgelaufen - Nutzer muss sich neu anmelden
+    // Token abgelaufen (z.B. Handy war laenger im Standby) - der geplante
+    // Refresh-Timer greift hier nicht mehr, also Login-Screen zeigen.
+    clearTimeout(erneuerungsTimer);
     accessToken = null;
     zeigeAnmeldeAnsicht();
     throw new Error("Sitzung abgelaufen, bitte erneut anmelden.");
@@ -864,6 +897,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("anmelden-btn").addEventListener("click", () => {
     document.getElementById("anmelde-fehler").hidden = true;
+    localStorage.removeItem("dashboard_abgemeldet");
+    autoLoginVersuch = false;
     tokenClient.requestAccessToken();
   });
 
@@ -876,6 +911,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("abmelden-btn").addEventListener("click", () => {
     if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
+    clearTimeout(erneuerungsTimer);
+    localStorage.setItem("dashboard_abgemeldet", "1");
     accessToken = null;
     appDaten = null;
     zeigeAnmeldeAnsicht();

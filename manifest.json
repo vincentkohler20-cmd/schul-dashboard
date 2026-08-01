@@ -1,0 +1,14 @@
+{
+  "name": "Schul-Dashboard",
+  "short_name": "Dashboard",
+  "description": "Nur-Lese-Ansicht auf Aufgaben, Klausuren, Punkte und Wiederholungen",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0c0a1a",
+  "theme_color": "#0c0a1a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

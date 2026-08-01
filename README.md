@@ -37,7 +37,7 @@ lässt sich aus dieser App heraus abhaken oder ändern.
 
 1. Auf [github.com](https://github.com/) ein kostenloses Konto anlegen (falls noch nicht vorhanden).
 2. "New repository" → Name frei wählbar (z.B. `schul-dashboard`), **Public**, ohne README (haben wir schon) → erstellen.
-3. Im neuen Repo: "Add file" → "Upload files" → alle Dateien aus diesem Ordner (`index.html`, `style.css`, `app.js`, `config.js`, `README.md`) per Drag & Drop hochladen → "Commit changes".
+3. Im neuen Repo: "Add file" → "Upload files" → alle Dateien und den `icons/`-Ordner aus diesem Verzeichnis (`index.html`, `style.css`, `app.js`, `config.js`, `manifest.json`, `README.md`, `icons/`) per Drag & Drop hochladen → "Commit changes". Bei jedem späteren Update reicht es, die geänderten Dateien erneut hochzuladen — GitHub überschreibt automatisch.
 4. Repo → "Settings" → "Pages" → unter "Build and deployment": Branch `main`, Ordner `/ (root)` → Speichern.
 5. Nach ca. 1 Minute ist die App unter `https://DEINNAME.github.io/schul-dashboard/` erreichbar.
 6. Falls diese URL nicht exakt der in Schritt 3 (Autorisierte JavaScript-Quellen) entspricht: in der Google Cloud Console nachtragen — Achtung, dort zählt nur der **Ursprung** ohne Pfad, also `https://DEINNAME.github.io` (ohne `/schul-dashboard/`).
@@ -46,15 +46,22 @@ lässt sich aus dieser App heraus abhaken oder ändern.
 
 App-URL auf dem Handy/iPad öffnen → "Mit Google anmelden" → deinen Account wählen → Warnung "Diese App wurde nicht von Google überprüft" erscheint (normal bei Testing-Apps) → "Erweitert" → "Zu [App-Name] (unsicher) wechseln" → Zugriff erlauben.
 
-Tipp: Auf dem iPhone/iPad kannst du die Seite über Safari → Teilen → "Zum Home-Bildschirm" wie eine eigene App ablegen.
+Tipp: Auf dem iPhone/iPad kannst du die Seite über Safari → Teilen → "Zum Home-Bildschirm" wie eine eigene App ablegen — dabei wird automatisch das Dashboard-Icon (dasselbe wie bei der Desktop-Verknüpfung) sowie der Name "Dashboard" übernommen, und die Seite öffnet sich ohne Browser-Adressleiste wie eine echte App.
 
 ## Wie es funktioniert
 
 - Beim Anmelden fordert die App per [Google Identity Services](https://developers.google.com/identity/oauth2/web/guides/overview) ein Zugriffstoken mit dem Scope `drive.readonly` an — das erlaubt **nur Lesen**, keine Schreib-API-Aufrufe sind damit überhaupt möglich.
 - Die App sucht deinen Vault-Ordner (Name aus `config.js`, Standard `ObsidianVault`) in deinem Drive, dann darin `Aufgaben/`, `Schule/Klausuren/`, `Schule/Noten/`.
-- Alle `.md`-Dateien werden geladen und im Browser geparst (Frontmatter via [js-yaml](https://github.com/nodeca/js-yaml)) — dieselbe Logik wie im lokalen [dashboard.py](../obsidian-dashboard/dashboard.py), nur ohne die Schreib-Funktionen.
-- Das Zugriffstoken läuft nach ca. 1 Stunde ab — dann einfach erneut "Mit Google anmelden" tippen.
+- Alle `.md`-Dateien werden **parallel** (nicht nacheinander) geladen und im Browser geparst (Frontmatter via [js-yaml](https://github.com/nodeca/js-yaml)) — dieselbe Logik wie im lokalen [dashboard.py](../obsidian-dashboard/dashboard.py), nur ohne die Schreib-Funktionen.
 - "🔄 Aktualisieren" lädt alle Daten neu (kein automatisches Polling, um die Drive-API-Quota zu schonen).
+
+### Angemeldet bleiben
+
+Das Zugriffstoken läuft nach ca. 1 Stunde ab. Die App versucht deshalb bei jedem Öffnen automatisch und unsichtbar, ein neues Token zu holen (ohne dass du etwas tippen musst) — das klappt, solange du auf dem Gerät noch bei Google angemeldet bist und der Zugriff schon einmal erlaubt wurde. Zusätzlich holt sie sich während einer laufenden Sitzung selbstständig rechtzeitig vor Ablauf ein neues Token, damit du bei aktiver Nutzung nicht mittendrin rausfliegst.
+
+**Ehrliche Einschränkung:** Browser blockieren automatisch geöffnete Login-Popups grundsätzlich (Popup-Blocker-Schutz) — das lässt sich bei einer rein clientseitigen App ohne eigenen Server nicht zu 100% umgehen. In der Praxis heißt das: meistens bleibst du eingeloggt, aber gelegentlich (z.B. nach längerer Pause oder je nach Browser/Gerät) siehst du kurz wieder den "Mit Google anmelden"-Button — ein Tap reicht dann aber, da die eigentliche Erlaubnis schon erteilt ist (keine erneute Rechte-Abfrage).
+
+Über "Abmelden" (⏻-Icon) wird das absichtlich respektiert: danach versucht die App beim nächsten Öffnen bewusst **nicht** mehr automatisch, dich wieder einzuloggen.
 
 ## Falls sich der Vault nochmal verschiebt
 
