@@ -678,9 +678,60 @@ function abschnittHtml(titel, liste, renderKarte, { klasseZusatz = "", leerText 
     </div>`;
 }
 
+// Hero-Kachel ganz oben im Aufgaben-Tab: die zeitlich naechste anstehende
+// Klausur mit grossem Countdown - Pendant zu render_naechste_klausur_kachel()
+// im Desktop-Dashboard (dashboard.py), gleiches Design/gleiche Ampel-Logik.
+function naechsteKlausurAbschnittHtml(klausurenAnstehend) {
+  if (!klausurenAnstehend.length) {
+    return `
+      <div class="abschnitt">
+        <div class="karte naechste-klausur-karte naechste-klausur-leer">
+          <div class="leer-hinweis" style="padding:0">📅 Aktuell keine Klausur geplant.</div>
+        </div>
+      </div>`;
+  }
+
+  const k = klausurenAnstehend[0]; // bereits nach Datum sortiert, siehe sammleAlleKlausuren
+  const tage = k.tage_bis;
+  const farbstufe = klausurFarbstufe(tage);
+  let tageZahlText, tageLabel;
+  if (tage === 0) { tageZahlText = "Heute"; tageLabel = ""; }
+  else if (tage === 1) { tageZahlText = "1"; tageLabel = "Tag"; }
+  else { tageZahlText = String(tage); tageLabel = "Tage"; }
+
+  const zeitGesamt = klausurZeitGesamt(k);
+  let lernstandHtml = "";
+  if (k.themen.length) {
+    const zaehler = { verstanden: 0, teilweise: 0, offen: 0 };
+    for (const eintrag of Object.values(k.lernstand)) zaehler[eintrag.status] = (zaehler[eintrag.status] || 0) + 1;
+    lernstandHtml = `
+      <div class="lernstand-text naechste-klausur-lernstand">
+        <span class="badge badge-niedrig">✅ ${zaehler.verstanden}</span>
+        <span class="badge badge-mittel">🟡 ${zaehler.teilweise}</span>
+        <span class="badge badge-hoch">🔴 ${zaehler.offen}</span>
+        · ${esc(formatiereMinuten(zeitGesamt))} investiert
+      </div>`;
+  }
+
+  return `
+    <div class="abschnitt">
+      <div class="karte naechste-klausur-karte klickbar" id="naechste-klausur-karte">
+        <div class="fach">Nächste Klausur · ${esc(k.fach)}</div>
+        <div class="naechste-klausur-titel">${esc(k.titel)}</div>
+        <div class="naechste-klausur-countdown">
+          <span class="naechste-klausur-tage naechste-klausur-${esc(farbstufe)}">${esc(tageZahlText)}</span>
+          ${tageLabel ? `<span class="naechste-klausur-tage-label">${esc(tageLabel)}</span>` : ""}
+        </div>
+        <div class="deadline">📅 ${esc(formatiereDatumLang(k.datum))}</div>
+        ${lernstandHtml}
+      </div>
+    </div>`;
+}
+
 function renderAufgabenTab() {
-  const { aufgaben, klausurVorschau } = appDaten;
+  const { aufgaben, klausurVorschau, klausurenAnstehend } = appDaten;
   let html = "";
+  html += naechsteKlausurAbschnittHtml(klausurenAnstehend);
   html += abschnittHtml("Überfällig", aufgaben.ueberfaellig, aufgabeKarteHtml, { klasseZusatz: "abschnitt-ueberfaellig" });
   html += abschnittHtml("Heute fällig", aufgaben.heute, aufgabeKarteHtml);
   html += abschnittHtml("Diese Woche", aufgaben.diese_woche, aufgabeKarteHtml);
@@ -712,6 +763,11 @@ function renderAufgabenTab() {
 
   if (!html) html = `<div class="leer-hinweis">Keine offenen Aufgaben gefunden.</div>`;
   document.getElementById("tab-aufgaben").innerHTML = html;
+
+  const naechsteKarte = document.getElementById("naechste-klausur-karte");
+  if (naechsteKarte && klausurenAnstehend.length) {
+    naechsteKarte.addEventListener("click", () => zeigeKlausurDetail(klausurenAnstehend[0]));
+  }
 }
 
 function klausurZeitGesamt(k) {

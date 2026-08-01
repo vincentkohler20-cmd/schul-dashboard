@@ -147,6 +147,17 @@ main { max-width: 640px; margin: 0 auto; }
 .karte.prioritaet-mittel { border-left-color: var(--mittel); }
 .karte.prioritaet-niedrig { border-left-color: var(--niedrig); }
 .karte.klausur-karte { border-left-color: var(--akzent); }
+
+.naechste-klausur-karte { border-left-color: var(--akzent); padding: 1.1rem 1.2rem; }
+.naechste-klausur-titel { font-weight: 600; font-size: 1.1rem; margin: 0.2rem 0 0.5rem; }
+.naechste-klausur-countdown { display: flex; align-items: baseline; gap: 0.4rem; margin: 0.1rem 0 0.4rem; }
+.naechste-klausur-tage { font-size: 2.4rem; font-weight: 800; line-height: 1; }
+.naechste-klausur-hoch { color: var(--hoch); }
+.naechste-klausur-mittel { color: var(--mittel); }
+.naechste-klausur-niedrig { color: var(--niedrig); }
+.naechste-klausur-tage-label { font-size: 0.95rem; color: var(--text-mild); font-weight: 600; }
+.naechste-klausur-lernstand { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem; }
+.naechste-klausur-leer { text-align: center; padding: 1.1rem; }
 .karte.klickbar { cursor: pointer; }
 
 .fach {
