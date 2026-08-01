@@ -284,11 +284,39 @@ function parseAufgabenDatei(text, dateiname) {
   return aufgaben;
 }
 
-function kategorisiereAufgaben(aufgaben, heute) {
+// Baut {fach_ordner: tage_bis} fuer die jeweils naechste anstehende Klausur
+// je Fach-Ordner - Pendant zu berechne_klausur_naehe_pro_fach() im Desktop-
+// Dashboard (dashboard.py). klausurenAnstehend hat tage_bis bereits gesetzt
+// (siehe sammleAlleKlausuren), bei mehreren Klausuren im Fach zaehlt die
+// naeher liegende.
+function berechneKlausurNaeheProFach(klausurenAnstehend) {
+  const naehe = {};
+  for (const k of klausurenAnstehend) {
+    const bisher = naehe[k.fachOrdnerName];
+    if (bisher === undefined || k.tage_bis < bisher) naehe[k.fachOrdnerName] = k.tage_bis;
+  }
+  return naehe;
+}
+
+// Eine Aufgabe kann mehrere Faecher kommagetrennt im Fach-Feld haben (z.B.
+// "Mathe-LK, Physik-LK" bei fachuebergreifenden Lernplaenen). Gibt die Tage
+// bis zur naechsten Klausur ueber alle genannten Faecher zurueck, oder null.
+function ermittleKlausurTageFuerAufgabe(aufgabeFach, klausurNaeheProFach) {
+  if (!aufgabeFach || aufgabeFach.trim() === "-" || aufgabeFach.trim() === "–") return null;
+  const treffer = aufgabeFach
+    .split(",")
+    .map((f) => f.trim())
+    .filter((f) => klausurNaeheProFach[f] !== undefined)
+    .map((f) => klausurNaeheProFach[f]);
+  return treffer.length ? Math.min(...treffer) : null;
+}
+
+function kategorisiereAufgaben(aufgaben, heute, klausurNaeheProFach = {}) {
   const kategorien = { ueberfaellig: [], heute: [], diese_woche: [], spaeter: [], abgeschlossen: [] };
   const wocheEnde = addTage(heute, DIESE_WOCHE_TAGE);
 
   for (const aufgabe of aufgaben) {
+    aufgabe.klausurTage = ermittleKlausurTageFuerAufgabe(aufgabe.fach, klausurNaeheProFach);
     const deadlineDatum = dateOnly(aufgabe.deadline);
 
     if (aufgabe.status === "abgeschlossen") {
@@ -305,12 +333,27 @@ function kategorisiereAufgaben(aufgaben, heute) {
 
   const sortierschluessel = (a) => [PRIORITAET_REIHENFOLGE[a.prioritaet] ?? 3, a.deadline.getTime()];
   for (const [name, liste] of Object.entries(kategorien)) {
-    liste.sort((a, b) => {
-      const [pa, da] = sortierschluessel(a);
-      const [pb, db] = sortierschluessel(b);
-      const cmp = pa - pb || da - db;
-      return name === "abgeschlossen" ? -cmp : cmp;
-    });
+    if (name === "abgeschlossen") {
+      // Erledigte zuletzt-faellige zuerst - Klausurnaehe spielt fuer bereits
+      // erledigte Aufgaben keine Rolle
+      liste.sort((a, b) => {
+        const [pa, da] = sortierschluessel(a);
+        const [pb, db] = sortierschluessel(b);
+        return -(pa - pb || da - db);
+      });
+    } else {
+      // Aufgaben mit naher Klausur im gleichen Fach werden innerhalb der
+      // Kategorie nach oben gezogen, ohne Klausurbezug = niedrigste
+      // Prioritaet innerhalb der Kategorie (dann wie bisher Prioritaet/Deadline)
+      liste.sort((a, b) => {
+        const ka = a.klausurTage ?? Infinity;
+        const kb = b.klausurTage ?? Infinity;
+        if (ka !== kb) return ka - kb;
+        const [pa, da] = sortierschluessel(a);
+        const [pb, db] = sortierschluessel(b);
+        return pa - pb || da - db;
+      });
+    }
   }
   return kategorien;
 }
@@ -620,10 +663,11 @@ async function ladeAlleDaten() {
   const wiederholungen = kategorisiereWiederholungen(sammleWiederholungen(klausurenRoh, heute));
   const faecherListe = faecherOrdner.map((f) => f.name).sort();
   const schriftlichProFach = sammleSchriftlichPunkteProFach(klausurenRoh, notenProFach);
+  const klausurNaeheProFach = berechneKlausurNaeheProFach(klausurenAnstehend);
 
   appDaten = {
     heute,
-    aufgaben: kategorisiereAufgaben(aufgaben, heute),
+    aufgaben: kategorisiereAufgaben(aufgaben, heute, klausurNaeheProFach),
     klausurVorschau,
     klausurenAnstehend,
     klausurenAbgeschlossen,
@@ -653,10 +697,25 @@ function renderAlles() {
 }
 
 function aufgabeKarteHtml(a) {
+  // Klausurnaehe-Badge: sichtbar (nicht erst im Dropdown), warum eine
+  // Aufgabe innerhalb ihrer Kategorie nach oben sortiert wurde - gleiche
+  // Ampel-Farblogik (rot/gelb/gruen) wie die Klausur-Countdowns sonst auch.
+  let klausurBadgeHtml = "";
+  if (a.klausurTage !== null && a.klausurTage !== undefined) {
+    const farbstufe = klausurFarbstufe(a.klausurTage);
+    let text;
+    if (a.klausurTage === 0) text = "Klausur heute!";
+    else if (a.klausurTage === 1) text = "Klausur morgen";
+    else if (a.klausurTage < 0) text = `Klausur ${Math.abs(a.klausurTage)} Tage überfällig`;
+    else text = `Klausur in ${a.klausurTage} Tagen`;
+    klausurBadgeHtml = `<span class="badge badge-${esc(farbstufe)} klausurnaehe-badge" title="Wegen anstehender Klausur im gleichen Fach hochpriorisiert">🎓 ${esc(text)}</span>`;
+  }
+
   return `
     <div class="karte prioritaet-${esc(a.prioritaet)}">
       <div class="titel">${esc(a.titel)}</div>
       <div class="deadline">${esc(formatiereDatumLang(a.deadline))}</div>
+      ${klausurBadgeHtml}
       <details class="details-dropdown">
         <summary>Details</summary>
         <div><strong>Fach:</strong> ${esc(a.fach)}</div>

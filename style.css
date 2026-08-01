@@ -184,6 +184,7 @@ main { max-width: 640px; margin: 0 auto; }
 .badge-verstanden { background: var(--niedrig); }
 .badge-teilweise { background: var(--mittel); }
 .badge-offen { background: var(--hoch); }
+.klausurnaehe-badge { margin: 0.35rem 0 0.15rem; }
 
 details.details-dropdown { margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-mild); }
 details.details-dropdown summary { cursor: pointer; color: var(--akzent); }
