@@ -16,8 +16,18 @@
 
 * { box-sizing: border-box; }
 
+/* Ohne Mindesthoehe endet der Verlaufshintergrund dort, wo der (oft kurze)
+   Inhalt aufhoert - darunter wuerde bis zum Bildschirmrand eine andere
+   Standardfarbe durchscheinen ("Streifen"). html braucht dieselbe
+   Hintergrundfarbe als Fallback, body mindestens Bildschirmhoehe. */
+html {
+  background: var(--bg);
+  height: 100%;
+}
+
 body {
   margin: 0;
+  min-height: 100dvh;
   /* unten Platz fuer die fixe Bottom-Navigation + iPhone-Home-Indicator */
   padding: 0 1rem calc(5.5rem + env(safe-area-inset-bottom));
   background:
@@ -27,6 +37,10 @@ body {
   color: var(--text);
   font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
+
+/* [hidden] muss auch bei Elementen mit eigenem display:flex/grid greifen -
+   sonst bleiben z.B. die Bottom-Tabs vor dem Login sichtbar. */
+[hidden] { display: none !important; }
 
 header {
   max-width: 640px;

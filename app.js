@@ -161,15 +161,18 @@ const FOLDER_MIME = "application/vnd.google-apps.folder";
 // Elternordners jeder Datei, analog zu Path.parent.name in dashboard.py.
 async function listMdRecursive(folderId, parentName) {
   const kinder = await driveListChildren(folderId);
-  let ergebnis = [];
-  for (const kind of kinder) {
-    if (kind.mimeType === FOLDER_MIME) {
-      ergebnis = ergebnis.concat(await listMdRecursive(kind.id, kind.name));
-    } else if (kind.name.endsWith(".md") && !kind.name.startsWith("_")) {
-      ergebnis.push({ id: kind.id, name: kind.name, parentName });
-    }
-  }
-  return ergebnis;
+
+  // Unterordner parallel statt nacheinander durchsuchen - bei z.B. 11
+  // Fach-Ordnern sonst 11 Netzwerk-Runden hintereinander statt gleichzeitig.
+  const unterordnerErgebnisse = await Promise.all(
+    kinder.filter((k) => k.mimeType === FOLDER_MIME).map((k) => listMdRecursive(k.id, k.name))
+  );
+
+  const dateien = kinder
+    .filter((k) => k.mimeType !== FOLDER_MIME && k.name.endsWith(".md") && !k.name.startsWith("_"))
+    .map((k) => ({ id: k.id, name: k.name, parentName }));
+
+  return dateien.concat(...unterordnerErgebnisse);
 }
 
 // ===========================================================================
@@ -291,11 +294,11 @@ async function ladeAufgaben(aufgabenOrdnerId, heute) {
     if (datei) dateien.push(datei);
   }
 
+  const inhalte = await Promise.all(dateien.map((d) => driveGetFileContent(d.id)));
   let alleAufgaben = [];
-  for (const datei of dateien) {
-    const text = await driveGetFileContent(datei.id);
-    alleAufgaben = alleAufgaben.concat(parseAufgabenDatei(text, datei.name));
-  }
+  inhalte.forEach((text, i) => {
+    alleAufgaben = alleAufgaben.concat(parseAufgabenDatei(text, dateien[i].name));
+  });
   return alleAufgaben;
 }
 
@@ -409,13 +412,13 @@ function parseKlausurDatei(text, titel, fachOrdnerName) {
 
 async function ladeKlausuren(klausurenOrdnerId) {
   const dateien = await listMdRecursive(klausurenOrdnerId, null);
+  const inhalte = await Promise.all(dateien.map((d) => driveGetFileContent(d.id)));
   const klausuren = [];
-  for (const datei of dateien) {
-    const text = await driveGetFileContent(datei.id);
-    const titel = datei.name.replace(/\.md$/i, "");
-    const klausur = parseKlausurDatei(text, titel, datei.parentName);
+  inhalte.forEach((text, i) => {
+    const titel = dateien[i].name.replace(/\.md$/i, "");
+    const klausur = parseKlausurDatei(text, titel, dateien[i].parentName);
     if (klausur) klausuren.push(klausur);
-  }
+  });
   return klausuren;
 }
 
@@ -502,13 +505,13 @@ function leseNotenAusText(text) {
 }
 
 async function ladeNotenProFach(notenOrdnerId) {
-  const dateien = await listMdRecursive(notenOrdnerId, null);
+  const alleDateien = await listMdRecursive(notenOrdnerId, null);
+  const dateien = alleDateien.filter((d) => d.name === "Noten.md");
+  const inhalte = await Promise.all(dateien.map((d) => driveGetFileContent(d.id)));
   const notenProFach = {};
-  for (const datei of dateien) {
-    if (datei.name !== "Noten.md") continue;
-    const text = await driveGetFileContent(datei.id);
-    notenProFach[datei.parentName] = leseNotenAusText(text);
-  }
+  inhalte.forEach((text, i) => {
+    notenProFach[dateien[i].parentName] = leseNotenAusText(text);
+  });
   return notenProFach;
 }
 
@@ -571,18 +574,17 @@ async function ladeAlleDaten() {
 
   const heute = dateOnly(new Date());
 
-  setStatus("Lade Aufgaben ...");
-  const aufgaben = await ladeAufgaben(aufgabenOrdner.id, heute);
+  setStatus("Lade Aufgaben, Klausuren & Punkte ...");
+  const [aufgaben, klausurenRoh, notenProFach, faecherOrdner] = await Promise.all([
+    ladeAufgaben(aufgabenOrdner.id, heute),
+    ladeKlausuren(klausurenOrdner.id),
+    ladeNotenProFach(notenOrdner.id),
+    driveListChildren(klausurenOrdner.id, ` and mimeType='${FOLDER_MIME}'`),
+  ]);
 
-  setStatus("Lade Klausuren ...");
-  const klausurenRoh = await ladeKlausuren(klausurenOrdner.id);
   const [klausurenAnstehend, klausurenAbgeschlossen] = sammleAlleKlausuren(klausurenRoh, heute);
   const klausurVorschau = sammleKlausurVorschau(klausurenRoh, heute);
   const wiederholungen = kategorisiereWiederholungen(sammleWiederholungen(klausurenRoh, heute));
-
-  setStatus("Lade Punkte ...");
-  const notenProFach = await ladeNotenProFach(notenOrdner.id);
-  const faecherOrdner = await driveListChildren(klausurenOrdner.id, ` and mimeType='${FOLDER_MIME}'`);
   const faecherListe = faecherOrdner.map((f) => f.name).sort();
   const schriftlichProFach = sammleSchriftlichPunkteProFach(klausurenRoh, notenProFach);
 
