@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Schul-Dashboard (mobil, nur lesen)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-zeile">
+    <h1>📱 Schul-Dashboard</h1>
+    <div class="header-aktionen" id="header-aktionen" hidden>
+      <button id="aktualisieren-btn" class="icon-btn" title="Aktualisieren" aria-label="Aktualisieren">🔄</button>
+      <button id="abmelden-btn" class="icon-btn" title="Abmelden" aria-label="Abmelden">⏻</button>
+    </div>
+  </div>
+  <p class="untertitel" id="status-zeile">Nur-Lese-Ansicht &middot; verbunden mit deinem Google Drive</p>
+</header>
+
+<main id="app">
+
+  <section id="anmelde-bereich" class="anmelde-bereich">
+    <p>Melde dich mit deinem Google-Konto an, um deinen Vault zu lesen.</p>
+    <button id="anmelden-btn" class="btn btn-primary">Mit Google anmelden</button>
+    <p id="anmelde-fehler" class="fehler-text" hidden></p>
+  </section>
+
+  <section id="inhalt-bereich" class="inhalt-bereich" hidden>
+    <section id="tab-aufgaben" class="tab-inhalt"></section>
+    <section id="tab-klausuren" class="tab-inhalt" hidden></section>
+    <section id="tab-punkte" class="tab-inhalt" hidden></section>
+    <section id="tab-wiederholen" class="tab-inhalt" hidden></section>
+
+    <section id="klausur-detail-overlay" class="detail-overlay" hidden></section>
+  </section>
+
+</main>
+
+<nav class="tabs" id="tabs" hidden>
+  <button class="tab-btn active" data-tab="aufgaben"><span class="tab-icon">📋</span><span class="tab-label">Aufgaben</span></button>
+  <button class="tab-btn" data-tab="klausuren"><span class="tab-icon">🎓</span><span class="tab-label">Klausuren</span></button>
+  <button class="tab-btn" data-tab="punkte"><span class="tab-icon">📊</span><span class="tab-label">Punkte</span></button>
+  <button class="tab-btn" data-tab="wiederholen"><span class="tab-icon">🔁</span><span class="tab-label">Wiederholen</span></button>
+</nav>
+
+<script src="https://accounts.google.com/gsi/client" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

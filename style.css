@@ -1,0 +1,212 @@
+:root {
+  --bg: #0c0a1a;
+  --karte-bg: #171233;
+  --karte-bg-2: #1d1740;
+  --text: #f1eefc;
+  --text-mild: #9c93c4;
+  --rand: #2c2456;
+  --hoch: #ff4d8d;
+  --mittel: #ffb443;
+  --niedrig: #2be3b0;
+  --akzent: #00d9ff;
+  --akzent-2: #b34dff;
+  --badge-text: #0c0a1a;
+  --glow-cyan: rgba(0, 217, 255, 0.28);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  /* unten Platz fuer die fixe Bottom-Navigation + iPhone-Home-Indicator */
+  padding: 0 1rem calc(5.5rem + env(safe-area-inset-bottom));
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(0, 217, 255, 0.10), transparent 60%),
+    radial-gradient(1000px 500px at 100% 0%, rgba(179, 77, 255, 0.10), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+header {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: calc(1rem + env(safe-area-inset-top)) 0 0.75rem;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+}
+.header-zeile { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+header h1 { margin: 0; font-size: 1.3rem; }
+.header-aktionen { display: flex; gap: 0.5rem; }
+.icon-btn {
+  border: 1px solid var(--rand);
+  background: var(--karte-bg);
+  color: var(--text);
+  border-radius: 10px;
+  width: 2.6rem;
+  height: 2.6rem;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.untertitel { margin: 0.3rem 0 0; color: var(--text-mild); font-size: 0.78rem; }
+
+main { max-width: 640px; margin: 0 auto; }
+
+.btn {
+  border: none;
+  border-radius: 12px;
+  padding: 0.85rem 1.2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--badge-text);
+  background: linear-gradient(120deg, var(--akzent), var(--akzent-2));
+}
+
+.anmelde-bereich {
+  margin-top: 3rem;
+  text-align: center;
+  color: var(--text-mild);
+}
+.fehler-text { color: var(--hoch); margin-top: 1rem; }
+
+/* Feste Bottom-Navigation - vertraut von mobilen Apps, alle 4 Tabs immer
+   sichtbar und gleich breit statt seitlich wegzuscrollen. */
+.tabs {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  background: var(--karte-bg);
+  border-top: 1px solid var(--rand);
+  padding: 0.4rem 0.4rem calc(0.4rem + env(safe-area-inset-bottom));
+}
+.tab-btn {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  background: none;
+  border: none;
+  color: var(--text-mild);
+  padding: 0.4rem 0.2rem;
+  border-radius: 10px;
+  font-size: 0.68rem;
+  cursor: pointer;
+  min-height: 44px;
+}
+.tab-icon { font-size: 1.25rem; }
+.tab-btn.active {
+  color: var(--akzent);
+  font-weight: 600;
+}
+
+.abschnitt { margin-top: 1.6rem; }
+.abschnitt h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.7rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 2px solid var(--rand);
+}
+.abschnitt-ueberfaellig h2 { color: var(--hoch); border-bottom-color: var(--hoch); }
+.zaehler { color: var(--text-mild); font-weight: normal; font-size: 0.82rem; }
+
+.karten-liste { display: flex; flex-direction: column; gap: 0.7rem; }
+
+.karte {
+  background: linear-gradient(160deg, var(--karte-bg-2), var(--karte-bg));
+  border: 1px solid var(--rand);
+  border-left: 4px solid var(--rand);
+  border-radius: 14px;
+  padding: 0.9rem 1.05rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.karte.prioritaet-hoch { border-left-color: var(--hoch); }
+.karte.prioritaet-mittel { border-left-color: var(--mittel); }
+.karte.prioritaet-niedrig { border-left-color: var(--niedrig); }
+.karte.klausur-karte { border-left-color: var(--akzent); }
+.karte.klickbar { cursor: pointer; }
+
+.fach {
+  font-size: 0.72rem;
+  color: var(--text-mild);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.titel { font-weight: 600; margin: 0.15rem 0; }
+.deadline { color: var(--text-mild); font-size: 0.85rem; }
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--badge-text);
+}
+.badge-hoch { background: var(--hoch); }
+.badge-mittel { background: var(--mittel); }
+.badge-niedrig { background: var(--niedrig); }
+.badge-verstanden { background: var(--niedrig); }
+.badge-teilweise { background: var(--mittel); }
+.badge-offen { background: var(--hoch); }
+
+details.details-dropdown { margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-mild); }
+details.details-dropdown summary { cursor: pointer; color: var(--akzent); }
+
+.leer-hinweis { color: var(--text-mild); font-size: 0.88rem; padding: 0.5rem 0; }
+
+.kpi-zeile {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.kpi-kachel {
+  background: linear-gradient(140deg, var(--akzent-2), var(--akzent));
+  border-radius: 14px;
+  padding: 0.8rem 1rem;
+  color: var(--bg);
+}
+.kpi-kachel .kpi-wert { font-size: 1.5rem; font-weight: 800; }
+.kpi-kachel .kpi-label { font-size: 0.72rem; opacity: 0.85; }
+
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  overflow-y: auto;
+  padding: 1rem;
+  z-index: 20;
+}
+.zurueck-link {
+  display: inline-block;
+  color: var(--text-mild);
+  text-decoration: none;
+  font-size: 0.88rem;
+  margin-bottom: 1rem;
+}
+.zurueck-link:hover { color: var(--akzent); }
+
+.thema-block {
+  border: 1px solid var(--rand);
+  border-radius: 12px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.7rem;
+  background: var(--karte-bg);
+}
+.thema-block h3 { margin: 0 0 0.3rem; font-size: 0.95rem; }
+.thema-meta { color: var(--text-mild); font-size: 0.8rem; }
+
+.punkte-zeile { display: flex; justify-content: space-between; font-size: 0.85rem; margin: 0.2rem 0; }
+.punkte-zeile .label { color: var(--text-mild); }
+.punkte-gesamt { font-weight: 700; color: var(--akzent); }
