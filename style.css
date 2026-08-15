@@ -30,10 +30,14 @@ body {
   min-height: 100dvh;
   /* unten Platz fuer die fixe Bottom-Navigation + iPhone-Home-Indicator */
   padding: 0 1rem calc(5.5rem + env(safe-area-inset-bottom));
+  /* background-attachment: fixed verankert den Verlauf am Sichtfenster statt
+     an der eigenen (sehr hohen, scrollbaren) Box - sonst waere die Position
+     der Farbflecken relativ zur Body-Hoehe berechnet, siehe header unten. */
   background:
     radial-gradient(1200px 600px at 15% -10%, rgba(0, 217, 255, 0.10), transparent 60%),
     radial-gradient(1000px 500px at 100% 0%, rgba(179, 77, 255, 0.10), transparent 55%),
     var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -49,13 +53,15 @@ header {
   position: sticky;
   top: 0;
   z-index: 5;
-  /* Gleicher Verlauf wie body, statt eines flachen var(--bg) - sonst
-     entsteht am sticky Header ein sichtbarer harter Farbbruch (der Header
-     deckt genau den Bereich ab, wo der body-Verlauf am hellsten ist). */
+  /* Gleicher Verlauf wie body UND background-attachment: fixed (siehe body
+     oben) - sonst wird die "15% -10%"-Position relativ zur eigenen (kurzen)
+     Header-Box statt zur (langen) Body-Box berechnet und der Verlauf sitzt
+     an einer ganz anderen Stelle -> sichtbare Kante trotz identischer CSS. */
   background:
     radial-gradient(1200px 600px at 15% -10%, rgba(0, 217, 255, 0.10), transparent 60%),
     radial-gradient(1000px 500px at 100% 0%, rgba(179, 77, 255, 0.10), transparent 55%),
     var(--bg);
+  background-attachment: fixed;
 }
 .header-zeile { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
 header h1 { margin: 0; font-size: 1.3rem; }
