@@ -211,7 +211,7 @@ details.details-dropdown summary { cursor: pointer; color: var(--akzent); }
   inset: 0;
   background: var(--bg);
   overflow-y: auto;
-  padding: 1rem;
+  padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(1rem + env(safe-area-inset-bottom));
   z-index: 20;
 }
 .zurueck-link {
