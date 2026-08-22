@@ -941,7 +941,14 @@ function renderPunkteTab() {
           </div>
           <div class="punkte-zeile">
             <span class="label">Gesamt</span>
-            <span class="punkte-gesamt">${gesamt !== null ? gesamt.toFixed(1) : "Noch unvollständig"}</span>
+            <span class="punkte-gesamt">${
+              gesamt !== null
+                // Wie im Desktop-Dashboard: gerundete Punktzahl gross, exakter
+                // Wert klein dahinter - vorher zeigten beide Apps hier
+                // unterschiedlich gerundete Zahlen.
+                ? `${Math.round(gesamt)} <span style="opacity:.65;font-weight:400;font-size:.85em">(genau: ${gesamt.toFixed(1)})</span>`
+                : "Noch unvollständig"
+            }</span>
           </div>
         </div>`;
     })
