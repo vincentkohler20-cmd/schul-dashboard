@@ -17,6 +17,10 @@ const GEWICHT_LK = { schriftlich: 0.4, muendlich: 0.6 };
 const GEWICHT_GK = { schriftlich: 0.3, muendlich: 0.7 };
 const WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
 
+const BEGLEITER_DATEI_NAME = "Begleiter-Uebersicht.md"; // liegt in Schule/ im Vault, wird von der Begleiter-Automatik geschrieben
+const BEGLEITER_NEU_TAGE = 7;       // Updates der letzten X Tage bekommen ein "Neu"-Badge
+const BEGLEITER_MAX_UPDATES = 5;    // so viele letzte Updates pro Fach anzeigen
+
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
 
@@ -177,6 +181,15 @@ async function driveFindFolderByName(name, parentId) {
     throw new Error(`Ordner '${name}' nicht gefunden (in Drive-Ordner ${parentId ?? "root"}).`);
   }
   return data.files[0];
+}
+
+// Sucht eine (Nicht-Ordner-)Datei per Name in einem Ordner. Gibt null
+// zurueck statt zu werfen, wenn es sie (noch) nicht gibt.
+async function driveFindFileByName(name, parentId) {
+  const q = `name='${qEscape(name)}' and '${parentId}' in parents and mimeType!='${FOLDER_MIME}' and trashed=false`;
+  const params = new URLSearchParams({ q, fields: "files(id, name)", pageSize: "5" });
+  const data = await driveFetchJson(`${DRIVE_API}?${params.toString()}`);
+  return data.files && data.files.length ? data.files[0] : null;
 }
 
 async function driveGetFileContent(fileId) {
@@ -619,6 +632,83 @@ function berechneGesamtpunktzahl(fachOrdner, schriftlich, muendlich) {
 // DATEN LADEN & ZUSAMMENFUEHREN
 // ===========================================================================
 
+// ---------------------------------------------------------------------------
+// BEGLEITER-UEBERSICHT (Schule/Begleiter-Uebersicht.md, Frontmatter-Schema:
+//   begleiter:
+//     - fach: "Mathe-LK"
+//       url: "https://drive.google.com/file/d/.../view"
+//       seiten: 14
+//       zuletzt_aktualisiert: "2026-09-21"
+//       updates:
+//         - datum: "2026-09-21"
+//           thema: "Kettenregel"
+//           zusammenfassung: "Ein Satz ..."
+//           seite: 12
+// Portiert identisch in dashboard.py (parse_begleiter_uebersicht).
+// ---------------------------------------------------------------------------
+
+function parseDatumIso(wert) {
+  if (!wert) return null;
+  if (wert instanceof Date) return dateOnly(wert);
+  const m = String(wert).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+}
+
+function parseBegleiterUebersicht(text, heute) {
+  const fm = leseFrontmatter(text);
+  const liste = Array.isArray(fm.begleiter) ? fm.begleiter : [];
+  const faecher = liste
+    .filter((b) => b && typeof b === "object" && b.fach)
+    .map((b) => {
+      const updates = (Array.isArray(b.updates) ? b.updates : [])
+        .filter((u) => u && typeof u === "object")
+        .map((u) => ({
+          datum: parseDatumIso(u.datum),
+          thema: String(u.thema ?? ""),
+          zusammenfassung: String(u.zusammenfassung ?? ""),
+          seite: Number.isFinite(Number(u.seite)) && u.seite !== null && u.seite !== "" ? Number(u.seite) : null,
+        }))
+        .sort((a, c) => (c.datum?.getTime() ?? 0) - (a.datum?.getTime() ?? 0));
+      const zuletzt = parseDatumIso(b.zuletzt_aktualisiert) || (updates[0] && updates[0].datum) || null;
+      const tageSeit = zuletzt ? diffTage(heute, zuletzt) : null;
+      return {
+        fach: String(b.fach),
+        url: b.url ? String(b.url) : null,
+        seiten: Number.isFinite(Number(b.seiten)) && b.seiten ? Number(b.seiten) : null,
+        zuletzt,
+        tageSeit,
+        istNeu: tageSeit !== null && tageSeit <= BEGLEITER_NEU_TAGE && updates.length > 0,
+        updates: updates.slice(0, BEGLEITER_MAX_UPDATES),
+      };
+    })
+    // Zuletzt aktualisierte Faecher zuerst, nie aktualisierte alphabetisch ans Ende
+    .sort((a, c) => {
+      if (a.zuletzt && c.zuletzt) return c.zuletzt - a.zuletzt;
+      if (a.zuletzt) return -1;
+      if (c.zuletzt) return 1;
+      return a.fach.localeCompare(c.fach, "de");
+    });
+  return { faecher, stand: parseDatumIso(fm.stand) };
+}
+
+async function ladeBegleiter(schuleOrdnerId, heute) {
+  try {
+    const datei = await driveFindFileByName(BEGLEITER_DATEI_NAME, schuleOrdnerId);
+    if (!datei) return null;
+    return parseBegleiterUebersicht(await driveGetFileContent(datei.id), heute);
+  } catch (e) {
+    // Die Begleiter-Uebersicht ist ein Zusatz - ein Fehler hier soll die
+    // restlichen Tabs nicht blockieren.
+    console.warn("Begleiter-Uebersicht konnte nicht geladen werden:", e);
+    return null;
+  }
+}
+
+function begleiterSeitenUrl(url, seite) {
+  if (!url) return null;
+  return seite ? `${url.split("#")[0]}#page=${seite}` : url;
+}
+
 let appDaten = null; // zuletzt geladener Zustand, fuer Klick-Handler der Detailansicht
 
 async function findeVaultOrdner() {
@@ -650,12 +740,13 @@ async function ladeAlleDaten() {
 
   const heute = dateOnly(new Date());
 
-  setStatus("Lade Aufgaben, Klausuren & Punkte ...");
-  const [aufgaben, klausurenRoh, notenProFach, faecherOrdner] = await Promise.all([
+  setStatus("Lade Aufgaben, Klausuren, Punkte & Begleiter ...");
+  const [aufgaben, klausurenRoh, notenProFach, faecherOrdner, begleiter] = await Promise.all([
     ladeAufgaben(aufgabenOrdner.id, heute),
     ladeKlausuren(klausurenOrdner.id),
     ladeNotenProFach(notenOrdner.id),
     driveListChildren(klausurenOrdner.id, ` and mimeType='${FOLDER_MIME}'`),
+    ladeBegleiter(schuleOrdner.id, heute),
   ]);
 
   const [klausurenAnstehend, klausurenAbgeschlossen] = sammleAlleKlausuren(klausurenRoh, heute);
@@ -675,6 +766,7 @@ async function ladeAlleDaten() {
     notenProFach,
     schriftlichProFach,
     wiederholungen,
+    begleiter,
   };
 
   setStatus(`Zuletzt aktualisiert: ${new Date().toLocaleTimeString("de-DE")}`);
@@ -694,6 +786,7 @@ function renderAlles() {
   renderKlausurenTab();
   renderPunkteTab();
   renderWiederholenTab();
+  renderBegleiterTab();
 }
 
 function aufgabeKarteHtml(a) {
@@ -976,6 +1069,57 @@ function renderWiederholenTab() {
 
   if (!html) html = `<div class="leer-hinweis">Keine fälligen Wiederholungen.</div>`;
   document.getElementById("tab-wiederholen").innerHTML = html;
+}
+
+function renderBegleiterTab() {
+  const container = document.getElementById("tab-begleiter");
+  const daten = appDaten.begleiter;
+  if (!daten || !daten.faecher.length) {
+    container.innerHTML = `<div class="leer-hinweis">Noch keine Begleiter-Übersicht gefunden. Sie wird von der Begleiter-Automatik (Mo–Fr 14 Uhr) in <code>Schule/${esc(BEGLEITER_DATEI_NAME)}</code> angelegt.</div>`;
+    return;
+  }
+
+  const neuAnzahl = daten.faecher.filter((f) => f.istNeu).length;
+  const kopf = `
+    <div class="begleiter-kopf">
+      <div class="kpi-kachel"><div class="kpi-wert">${neuAnzahl}</div><div class="kpi-label">Fächer mit neuem Stoff (${BEGLEITER_NEU_TAGE} Tage)</div></div>
+      <div class="kpi-kachel"><div class="kpi-wert">${daten.faecher.length}</div><div class="kpi-label">Begleiter insgesamt</div></div>
+    </div>`;
+
+  const karten = daten.faecher.map((f) => {
+    const zuletztText = f.zuletzt
+      ? (f.tageSeit === 0 ? "heute aktualisiert" : f.tageSeit === 1 ? "gestern aktualisiert" : `aktualisiert am ${formatiereDatumKurz(f.zuletzt)}`)
+      : "noch keine Updates";
+    const updatesHtml = f.updates.length
+      ? `<ul class="begleiter-updates">${f.updates.map((u) => {
+          const link = begleiterSeitenUrl(f.url, u.seite);
+          const seiteHtml = u.seite
+            ? (link ? `<a class="begleiter-seite" href="${esc(link)}" target="_blank" rel="noopener">S. ${u.seite} ↗</a>` : `<span class="begleiter-seite">S. ${u.seite}</span>`)
+            : "";
+          return `
+            <li>
+              <div class="begleiter-update-kopf">
+                <span class="begleiter-datum">${u.datum ? esc(formatiereDatumKurz(u.datum)) : ""}</span>
+                <span class="begleiter-thema">${esc(u.thema)}</span>
+                ${seiteHtml}
+              </div>
+              ${u.zusammenfassung ? `<div class="begleiter-text">${esc(u.zusammenfassung)}</div>` : ""}
+            </li>`;
+        }).join("")}</ul>`
+      : "";
+    return `
+      <div class="karte begleiter-karte${f.istNeu ? " begleiter-neu" : ""}">
+        <div class="fach-zeile">
+          <span class="fach">${esc(f.fach)}</span>
+          ${f.istNeu ? `<span class="badge badge-neu">Neu</span>` : ""}
+        </div>
+        <div class="deadline">${esc(zuletztText)}${f.seiten ? ` · ${f.seiten} Seiten` : ""}</div>
+        ${updatesHtml}
+        ${f.url ? `<a class="btn begleiter-btn" href="${esc(f.url)}" target="_blank" rel="noopener">📖 Begleiter öffnen</a>` : ""}
+      </div>`;
+  }).join("");
+
+  container.innerHTML = `${kopf}<div class="karten-liste" style="margin-top:1rem">${karten}</div>`;
 }
 
 // ===========================================================================

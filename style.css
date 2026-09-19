@@ -248,3 +248,18 @@ details.details-dropdown summary { cursor: pointer; color: var(--akzent); }
 .punkte-zeile { display: flex; justify-content: space-between; font-size: 0.85rem; margin: 0.2rem 0; }
 .punkte-zeile .label { color: var(--text-mild); }
 .punkte-gesamt { font-weight: 700; color: var(--akzent); }
+
+/* --- Begleiter-Tab (seit 2026-09-19) --- */
+.begleiter-kopf { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 1rem; }
+.begleiter-karte { border-left-color: var(--rand); }
+.begleiter-karte.begleiter-neu { border-left-color: var(--akzent); box-shadow: 0 6px 22px var(--glow-cyan); }
+.begleiter-karte .fach-zeile { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.badge-neu { background: linear-gradient(135deg, var(--akzent), var(--akzent-2)); }
+.begleiter-updates { list-style: none; margin: 0.7rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+.begleiter-updates li { border-top: 1px solid var(--rand); padding-top: 0.5rem; }
+.begleiter-update-kopf { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.begleiter-datum { color: var(--text-mild); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.begleiter-thema { font-weight: 600; font-size: 0.9rem; flex: 1 1 auto; }
+.begleiter-seite { color: var(--akzent); font-size: 0.8rem; text-decoration: none; white-space: nowrap; }
+.begleiter-text { color: var(--text-mild); font-size: 0.84rem; margin-top: 0.15rem; line-height: 1.4; }
+.begleiter-btn { display: block; text-align: center; text-decoration: none; margin-top: 0.8rem; padding: 0.65rem 1rem; font-size: 0.92rem; }
