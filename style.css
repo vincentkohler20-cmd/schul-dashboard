@@ -1,265 +1,327 @@
+/* Design "Clean Dark" (seit 2026-09-26). Die Tokens sind identisch mit
+   BASIS_CSS in obsidian-dashboard/dashboard.py - Aenderungen immer auf
+   beiden Seiten machen, damit Desktop und Mobile gleich aussehen. */
 :root {
-  --bg: #0c0a1a;
-  --karte-bg: #171233;
-  --karte-bg-2: #1d1740;
-  --text: #f1eefc;
-  --text-mild: #9c93c4;
-  --rand: #2c2456;
-  --hoch: #ff4d8d;
-  --mittel: #ffb443;
-  --niedrig: #2be3b0;
-  --akzent: #00d9ff;
-  --akzent-2: #b34dff;
-  --badge-text: #0c0a1a;
-  --glow-cyan: rgba(0, 217, 255, 0.28);
+  --bg: #000000;            /* Seitenhintergrund */
+  --surface: #0A0A0A;       /* Karten, Bottom-Nav */
+  --surface-2: #111111;     /* Elemente in Karten */
+  --hover: #161616;         /* Hover + aktiver Nav-Eintrag */
+  --border: #1C1C1C;        /* Kartenrahmen */
+  --divider: #161616;       /* Trennlinien zwischen Listenzeilen */
+  --border-strong: #262626; /* Pills, Eingabefelder */
+  --track: #222222;         /* Fortschrittsbalken-Spur */
+  --text: #EDEDED;
+  --text-strong: #FFFFFF;
+  --muted: #8F8F8F;
+  --muted-2: #A1A1A1;
+  --urgent: #F5A524;        /* EINZIGE Signalfarbe */
+  --radius-card: 14px;
+  --radius-inner: 10px;
+  --radius-pill: 999px;
+  --font: 'Geist', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, monospace;
+  --nav-hoehe: 64px;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
+/* [hidden] muss auch bei Elementen mit eigenem display:flex/grid greifen. */
+[hidden] { display: none !important; }
 
-/* Ohne Mindesthoehe endet der Verlaufshintergrund dort, wo der (oft kurze)
-   Inhalt aufhoert - darunter wuerde bis zum Bildschirmrand eine andere
-   Standardfarbe durchscheinen ("Streifen"). html braucht dieselbe
-   Hintergrundfarbe als Fallback, body mindestens Bildschirmhoehe. */
-html {
-  background: var(--bg);
-  height: 100%;
-}
-
+html { background: var(--bg); }
 body {
   margin: 0;
   min-height: 100dvh;
-  /* unten Platz fuer die fixe Bottom-Navigation + iPhone-Home-Indicator */
-  padding: 0 1rem calc(5.5rem + env(safe-area-inset-bottom));
-  /* background-attachment: fixed verankert den Verlauf am Sichtfenster statt
-     an der eigenen (sehr hohen, scrollbaren) Box - sonst waere die Position
-     der Farbflecken relativ zur Body-Hoehe berechnet, siehe header unten. */
-  background:
-    radial-gradient(1200px 600px at 15% -10%, rgba(0, 217, 255, 0.10), transparent 60%),
-    radial-gradient(1000px 500px at 100% 0%, rgba(179, 77, 255, 0.10), transparent 55%),
-    var(--bg);
-  background-attachment: fixed;
+  background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
 }
+h1, h2, h3 { margin: 0; font-weight: 600; color: var(--text-strong); }
+p { margin: 0; }
+a { color: inherit; }
+button { font-family: inherit; }
+:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.icon { flex-shrink: 0; display: block; }
+code { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
 
-/* [hidden] muss auch bei Elementen mit eigenem display:flex/grid greifen -
-   sonst bleiben z.B. die Bottom-Tabs vor dem Login sichtbar. */
-[hidden] { display: none !important; }
+.ton-hoch { color: var(--urgent); }
+.ton-mittel { color: var(--text); }
+.ton-niedrig { color: var(--muted); }
 
-header {
+/* --- Seitenrahmen ------------------------------------------------------- */
+.seite {
   max-width: 640px;
   margin: 0 auto;
-  padding: calc(1rem + env(safe-area-inset-top)) 0 0.75rem;
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  /* Gleicher Verlauf wie body UND background-attachment: fixed (siehe body
-     oben) - sonst wird die "15% -10%"-Position relativ zur eigenen (kurzen)
-     Header-Box statt zur (langen) Body-Box berechnet und der Verlauf sitzt
-     an einer ganz anderen Stelle -> sichtbare Kante trotz identischer CSS. */
-  background:
-    radial-gradient(1200px 600px at 15% -10%, rgba(0, 217, 255, 0.10), transparent 60%),
-    radial-gradient(1000px 500px at 100% 0%, rgba(179, 77, 255, 0.10), transparent 55%),
-    var(--bg);
-  background-attachment: fixed;
+  padding: calc(20px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) calc(var(--nav-hoehe) + 32px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
-.header-zeile { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
-header h1 { margin: 0; font-size: 1.3rem; }
-.header-aktionen { display: flex; gap: 0.5rem; }
+.kopf { margin-bottom: 20px; }
+.kopf-oben { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; }
+.kopf-datum { color: var(--muted); font-size: 14px; }
+.kopf-zeile { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 2px; }
+.kopf h1 { font-size: 28px; letter-spacing: -0.02em; }
+.header-aktionen { display: flex; gap: 8px; }
 .icon-btn {
-  border: 1px solid var(--rand);
-  background: var(--karte-bg);
-  color: var(--text);
-  border-radius: 10px;
-  width: 2.6rem;
-  height: 2.6rem;
-  font-size: 1.1rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
+  width: 44px; height: 44px; margin: -4px -6px -4px 0;
+  display: grid; place-items: center;
+  background: transparent; border: 0; border-radius: var(--radius-inner);
+  color: var(--muted); cursor: pointer;
 }
-.untertitel { margin: 0.3rem 0 0; color: var(--text-mild); font-size: 0.78rem; }
+.icon-btn:hover { background: var(--hover); color: var(--text); }
+.offen-chip {
+  display: inline-flex; align-items: center; gap: 8px; height: 44px; padding: 0 18px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+  color: var(--text); font-size: 14px; white-space: nowrap;
+}
+.offen-chip .icon { color: var(--muted-2); }
+.untertitel { margin-top: 6px; color: var(--muted); font-size: 12px; }
 
-main { max-width: 640px; margin: 0 auto; }
+/* --- Login -------------------------------------------------------------- */
+.anmelde-bereich { margin-top: 48px; text-align: center; color: var(--muted); display: grid; gap: 20px; justify-items: center; }
+.fehler-text { color: var(--urgent); }
 
+/* --- Buttons ------------------------------------------------------------ */
 .btn {
-  border: none;
-  border-radius: 12px;
-  padding: 0.85rem 1.2rem;
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  color: var(--badge-text);
-  background: linear-gradient(120deg, var(--akzent), var(--akzent-2));
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 44px; padding: 0 18px; border-radius: var(--radius-inner);
+  font-size: 14px; font-weight: 600; line-height: 1; cursor: pointer;
+  text-decoration: none; border: 1px solid transparent; white-space: nowrap;
 }
+.btn-primaer { background: var(--text); color: #000; }
+.btn-primaer:hover { background: var(--text-strong); }
+.btn-sekundaer { background: transparent; border-color: var(--border-strong); color: var(--text); font-weight: 500; }
+.btn-sekundaer:hover { background: var(--hover); }
+.btn-breit { width: 100%; margin-top: 16px; }
 
-.anmelde-bereich {
-  margin-top: 3rem;
-  text-align: center;
-  color: var(--text-mild);
-}
-.fehler-text { color: var(--hoch); margin-top: 1rem; }
-
-/* Feste Bottom-Navigation - vertraut von mobilen Apps, alle 4 Tabs immer
-   sichtbar und gleich breit statt seitlich wegzuscrollen. */
+/* --- Bottom-Navigation (Handy) ------------------------------------------ */
 .tabs {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 10;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
   display: flex;
-  background: var(--karte-bg);
-  border-top: 1px solid var(--rand);
-  padding: 0.4rem 0.4rem calc(0.4rem + env(safe-area-inset-bottom));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
 }
 .tab-btn {
-  flex: 1 1 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.15rem;
-  background: none;
-  border: none;
-  color: var(--text-mild);
-  padding: 0.4rem 0.2rem;
-  border-radius: 10px;
-  font-size: 0.68rem;
-  cursor: pointer;
-  min-height: 44px;
+  flex: 1 1 0; min-width: 0; min-height: 52px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: none; border: 0; border-radius: var(--radius-inner);
+  color: var(--muted); cursor: pointer; padding: 4px 2px;
 }
-.tab-icon { font-size: 1.25rem; }
-.tab-btn.active {
-  color: var(--akzent);
-  font-weight: 600;
+.tab-label { font-size: 11px; font-weight: 500; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--text-strong); }
+
+/* --- Karten ------------------------------------------------------------- */
+.stapel { display: flex; flex-direction: column; gap: 16px; }
+.tab-inhalt > .stapel, .tab-inhalt > .raster { margin-top: 0; }
+.karte { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); min-width: 0; }
+.karte-kopf {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
 }
+.karte-kopf.flach { border-bottom: 0; padding-bottom: 4px; }
+.karte-kopf h2 { font-size: 15px; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.karte-kopf h2.ton-hoch { color: var(--urgent); }
+.karte-meta { color: var(--muted); font-size: 13px; text-align: right; }
+.karte-inhalt { padding: 14px 16px; }
+.karte-fuss { padding: 10px 16px 14px; color: var(--muted); font-size: 13px; }
+.zaehler { color: var(--muted); font-weight: 400; font-family: var(--font-mono); font-size: 13px; }
+.leer { padding: 16px; color: var(--muted); font-size: 14px; }
+.hinweis-text { color: var(--muted); font-size: 13px; }
+.raster { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 
-.abschnitt { margin-top: 1.6rem; }
-.abschnitt h2 {
-  font-size: 1.05rem;
-  margin: 0 0 0.7rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 2px solid var(--rand);
+/* --- Listenzeilen ------------------------------------------------------- */
+.liste { list-style: none; margin: 0; padding: 0; }
+.liste > li { border-bottom: 1px solid var(--divider); }
+.liste > li:last-child { border-bottom: 0; }
+.zeile {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  min-height: 44px; padding: 14px 16px;
+  background: none; border: 0; color: inherit; text-align: left; font-size: inherit;
 }
-.abschnitt-ueberfaellig h2 { color: var(--hoch); border-bottom-color: var(--hoch); }
-.zaehler { color: var(--text-mild); font-weight: normal; font-size: 0.82rem; }
+button.zeile { cursor: pointer; }
+button.zeile:hover { background: var(--hover); }
+.liste > li:last-child > button.zeile { border-radius: 0 0 var(--radius-card) var(--radius-card); }
+.punkt { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--muted); }
+.punkt.ton-hoch { background: var(--urgent); }
+.punkt.ton-mittel { background: var(--text); }
+.punkt.ton-niedrig { background: var(--muted); }
+.aufgabe-zeile { align-items: flex-start; }
+.aufgabe-zeile .punkt { margin-top: 7px; }
+.zeile-text { flex: 1; min-width: 0; display: block; }
+.zeile-titel { display: block; font-size: 15px; font-weight: 500; color: var(--text-strong); overflow-wrap: break-word; }
+.zeile-meta { display: block; font-size: 13px; color: var(--muted); margin-top: 3px; }
+.aufgabe-zeile.erledigt .zeile-titel { color: var(--muted); text-decoration: line-through; }
+.zahl { font-family: var(--font-mono); font-size: 15px; color: var(--text); white-space: nowrap; flex-shrink: 0; }
+.faellig { font-size: 13px; white-space: nowrap; flex-shrink: 0; }
 
-.karten-liste { display: flex; flex-direction: column; gap: 0.7rem; }
-
-.karte {
-  background: linear-gradient(160deg, var(--karte-bg-2), var(--karte-bg));
-  border: 1px solid var(--rand);
-  border-left: 4px solid var(--rand);
-  border-radius: 14px;
-  padding: 0.9rem 1.05rem;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+/* --- Pills -------------------------------------------------------------- */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-pill);
+  font-size: 13px; color: var(--muted-2); white-space: nowrap; flex-shrink: 0;
 }
-.karte.prioritaet-hoch { border-left-color: var(--hoch); }
-.karte.prioritaet-mittel { border-left-color: var(--mittel); }
-.karte.prioritaet-niedrig { border-left-color: var(--niedrig); }
-.karte.klausur-karte { border-left-color: var(--akzent); }
+.pill.wert { color: var(--text); font-family: var(--font-mono); }
+.pill.ton-hoch { color: var(--urgent); border-color: #5a4217; }
+.pill.ton-mittel { color: var(--text); }
+.pill.ton-niedrig { color: var(--muted); }
+.pill-reihe { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 
-.naechste-klausur-karte { border-left-color: var(--akzent); padding: 1.1rem 1.2rem; }
-.naechste-klausur-titel { font-weight: 600; font-size: 1.1rem; margin: 0.2rem 0 0.5rem; }
-.naechste-klausur-countdown { display: flex; align-items: baseline; gap: 0.4rem; margin: 0.1rem 0 0.4rem; }
-.naechste-klausur-tage { font-size: 2.4rem; font-weight: 800; line-height: 1; }
-.naechste-klausur-hoch { color: var(--hoch); }
-.naechste-klausur-mittel { color: var(--mittel); }
-.naechste-klausur-niedrig { color: var(--niedrig); }
-.naechste-klausur-tage-label { font-size: 0.95rem; color: var(--text-mild); font-weight: 600; }
-.naechste-klausur-lernstand { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem; }
-.naechste-klausur-leer { text-align: center; padding: 1.1rem; }
-.karte.klickbar { cursor: pointer; }
-
-.fach {
-  font-size: 0.72rem;
-  color: var(--text-mild);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+/* --- Aufklapper --------------------------------------------------------- */
+details > summary { list-style: none; cursor: pointer; }
+details > summary::-webkit-details-marker { display: none; }
+.aufklapper > summary {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 36px;
+  color: var(--muted); font-size: 13px; user-select: none; -webkit-user-select: none;
 }
-.titel { font-weight: 600; margin: 0.15rem 0; }
-.deadline { color: var(--text-mild); font-size: 0.85rem; }
+.aufklapper > summary:hover { color: var(--text); }
+.chevron { transition: transform 0.15s ease; }
+details[open] > summary .chevron { transform: rotate(90deg); }
+.aufklapper-inhalt { padding: 4px 0; color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
+.karte > details > summary.karte-kopf { border-bottom: 0; }
+.karte > details[open] > summary.karte-kopf { border-bottom: 1px solid var(--border); }
+.noch-zeit > summary { display: flex; align-items: center; gap: 6px; padding: 14px 16px; color: var(--muted); font-size: 14px; min-height: 44px; }
+.noch-zeit { border-top: 1px solid var(--divider); }
 
-.badge {
-  display: inline-block;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: var(--badge-text);
+/* --- KPI: 2x2-Raster aus Karten (Handy) --------------------------------- */
+.kpi-streifen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi-zelle { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 14px 16px 16px; min-width: 0; }
+.kpi-label { color: var(--muted); font-size: 13px; }
+.kpi-wert-zeile { display: flex; align-items: baseline; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.kpi-wert { font-family: var(--font-mono); font-size: 26px; font-weight: 500; letter-spacing: -0.03em; line-height: 1; color: var(--text-strong); }
+.kpi-zusatz { color: var(--muted); font-size: 12px; }
+.kpi-zusatz.ton-hoch { color: var(--urgent); }
+
+/* --- Heute -------------------------------------------------------------- */
+.heute-raster { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.karte-wichtig { display: flex; flex-direction: column; }
+
+/* Naechste Klausuren: Countdown-Kacheln */
+.kacheln { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 12px; }
+.kachel {
+  display: flex; align-items: center; gap: 16px; width: 100%; padding: 12px 14px;
+  background: var(--surface-2); border: 0; border-radius: var(--radius-inner);
+  color: inherit; text-align: left; cursor: pointer;
 }
-.badge-hoch { background: var(--hoch); }
-.badge-mittel { background: var(--mittel); }
-.badge-niedrig { background: var(--niedrig); }
-.badge-verstanden { background: var(--niedrig); }
-.badge-teilweise { background: var(--mittel); }
-.badge-offen { background: var(--hoch); }
-.klausurnaehe-badge { margin: 0.35rem 0 0.15rem; }
+.kachel:hover { background: var(--hover); }
+.countdown { width: 42px; text-align: center; flex-shrink: 0; display: block; }
+.countdown-zahl { display: block; font-family: var(--font-mono); font-size: 22px; font-weight: 500; line-height: 1; }
+.countdown-label { display: block; font-size: 12px; color: var(--muted); margin-top: 5px; }
+.kachel-mitte { flex: 1; min-width: 0; display: block; }
+.kachel-kopf { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 10px; margin-bottom: 10px; }
+.kachel-titel { font-size: 15px; font-weight: 500; color: var(--text-strong); overflow-wrap: break-word; }
+.kachel-meta { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.balken { display: block; height: 4px; background: var(--track); border-radius: var(--radius-pill); overflow: hidden; }
+.balken > span { display: block; height: 100%; background: var(--text); border-radius: var(--radius-pill); }
 
-details.details-dropdown { margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-mild); }
-details.details-dropdown summary { cursor: pointer; color: var(--akzent); }
-
-.leer-hinweis { color: var(--text-mild); font-size: 0.88rem; padding: 0.5rem 0; }
-
-.kpi-zeile {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.6rem;
-  margin-top: 1rem;
+/* Hero "Naechste Klausur" im Aufgaben-Tab */
+.hero {
+  display: flex; align-items: center; gap: 20px; width: 100%; padding: 16px;
+  background: none; border: 0; color: inherit; text-align: left; cursor: pointer; border-radius: var(--radius-card);
 }
-.kpi-kachel {
-  background: linear-gradient(140deg, var(--akzent-2), var(--akzent));
-  border-radius: 14px;
-  padding: 0.8rem 1rem;
-  color: var(--bg);
-}
-.kpi-kachel .kpi-wert { font-size: 1.5rem; font-weight: 800; }
-.kpi-kachel .kpi-label { font-size: 0.72rem; opacity: 0.85; }
+.hero:hover { background: var(--hover); }
+.hero-zahl { display: block; text-align: center; font-family: var(--font-mono); font-size: 44px; font-weight: 500; letter-spacing: -0.03em; line-height: 1; }
+.hero-label { display: block; text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px; }
+.hero-text { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.hero-titel { font-size: 18px; font-weight: 600; color: var(--text-strong); }
 
+/* --- Klausuren ---------------------------------------------------------- */
+.vergangen .zeile { align-items: flex-start; }
+.vergangen-extra { padding: 0 16px 12px; }
+.fehler-liste { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.fehler-liste li { padding-left: 12px; border-left: 2px solid var(--border-strong); display: grid; gap: 3px; }
+.fehler-feld { display: grid; grid-template-columns: 92px 1fr; gap: 8px; margin: 0; font-size: 13px; }
+.fehler-feld dt { color: var(--muted); }
+.fehler-feld dd { margin: 0; color: var(--text); }
+.extern-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; min-height: 36px; color: var(--text); font-size: 13px; font-weight: 500; text-decoration: none; }
+
+/* --- Detailansicht (Overlay) -------------------------------------------- */
 .detail-overlay {
-  position: fixed;
-  inset: 0;
-  background: var(--bg);
-  overflow-y: auto;
-  padding: calc(1rem + env(safe-area-inset-top)) 1rem calc(1rem + env(safe-area-inset-bottom));
-  z-index: 20;
+  position: fixed; inset: 0; z-index: 20; overflow-y: auto; background: var(--bg);
+  -webkit-overflow-scrolling: touch;
+}
+.detail {
+  max-width: 760px; margin: 0 auto;
+  padding: calc(16px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 .zurueck-link {
-  display: inline-block;
-  color: var(--text-mild);
-  text-decoration: none;
-  font-size: 0.88rem;
-  margin-bottom: 1rem;
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0;
+  background: none; border: 0; color: var(--muted); font-size: 14px; cursor: pointer;
 }
-.zurueck-link:hover { color: var(--akzent); }
+.zurueck-link:hover { color: var(--text); }
+.detail-kopf { margin: 8px 0 20px; display: grid; gap: 6px; }
+.detail-kopf h1 { font-size: 28px; letter-spacing: -0.02em; }
+.thema { padding: 14px 16px; }
+.thema-kopf { display: flex; align-items: center; gap: 12px; }
+.thema .aufklapper { margin-left: 20px; }
+.sessions-liste { list-style: none; margin: 0; padding: 0 0 4px; display: grid; gap: 4px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
 
-.thema-block {
-  border: 1px solid var(--rand);
-  border-radius: 12px;
-  padding: 0.8rem 1rem;
-  margin-bottom: 0.7rem;
-  background: var(--karte-bg);
+/* --- Punkte ------------------------------------------------------------- */
+.werte { display: grid; gap: 10px; }
+.wert-zeile { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; }
+.wert-zeile .label { color: var(--muted); }
+.wert-zeile .wert { font-family: var(--font-mono); color: var(--text); }
+.abschnitt-trenner { border-top: 1px solid var(--divider); margin-top: 14px; padding-top: 12px; }
+.gesamt-zeile { display: flex; align-items: baseline; gap: 10px; margin-top: 8px; }
+.gesamt { font-family: var(--font-mono); font-size: 28px; font-weight: 500; letter-spacing: -0.03em; color: var(--text-strong); line-height: 1; }
+.gesamt-genau { color: var(--muted); font-size: 13px; font-family: var(--font-mono); }
+
+/* --- Begleiter ---------------------------------------------------------- */
+.begleiter-update { padding: 12px 0; border-top: 1px solid var(--divider); }
+.begleiter-update:first-child { border-top: 0; padding-top: 0; }
+.begleiter-update-kopf { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.begleiter-datum { font-family: var(--font-mono); color: var(--muted); font-size: 12px; }
+.begleiter-thema { flex: 1; min-width: 0; color: var(--text-strong); font-weight: 500; }
+.begleiter-seite { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; color: var(--muted-2); font-size: 13px; text-decoration: none; font-family: var(--font-mono); }
+.begleiter-text { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+/* --- Hinweise ----------------------------------------------------------- */
+.hinweis-banner {
+  margin-bottom: 16px; padding: 12px 14px; border-radius: var(--radius-inner);
+  border: 1px solid #5a4217; color: var(--urgent); font-size: 13px; line-height: 1.45;
 }
-.thema-block h3 { margin: 0 0 0.3rem; font-size: 0.95rem; }
-.thema-meta { color: var(--text-mild); font-size: 0.8rem; }
+.hinweis-details { margin-top: 10px; font-size: 12px; word-break: break-all; }
 
-.punkte-zeile { display: flex; justify-content: space-between; font-size: 0.85rem; margin: 0.2rem 0; }
-.punkte-zeile .label { color: var(--text-mild); }
-.punkte-gesamt { font-weight: 700; color: var(--akzent); }
-
-/* --- Begleiter-Tab (seit 2026-09-19) --- */
-.begleiter-kopf { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; margin-top: 1rem; }
-.begleiter-karte { border-left-color: var(--rand); }
-.begleiter-karte.begleiter-neu { border-left-color: var(--akzent); box-shadow: 0 6px 22px var(--glow-cyan); }
-.begleiter-karte .fach-zeile { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
-.badge-neu { background: linear-gradient(135deg, var(--akzent), var(--akzent-2)); }
-.begleiter-updates { list-style: none; margin: 0.7rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
-.begleiter-updates li { border-top: 1px solid var(--rand); padding-top: 0.5rem; }
-.begleiter-update-kopf { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
-.begleiter-datum { color: var(--text-mild); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-.begleiter-thema { font-weight: 600; font-size: 0.9rem; flex: 1 1 auto; }
-.begleiter-seite { color: var(--akzent); font-size: 0.8rem; text-decoration: none; white-space: nowrap; }
-.begleiter-text { color: var(--text-mild); font-size: 0.84rem; margin-top: 0.15rem; line-height: 1.4; }
-.begleiter-btn { display: block; text-align: center; text-decoration: none; margin-top: 0.8rem; padding: 0.65rem 1rem; font-size: 0.92rem; }
+/* --- iPad / ab 768 px: wie Desktop mit eingeklappter Icon-Sidebar ------- */
+@media (min-width: 768px) {
+  .tabs {
+    top: 0; bottom: 0; right: auto; width: 72px;
+    flex-direction: column; align-items: center; gap: 4px;
+    border-top: 0; border-right: 1px solid var(--border);
+    background: var(--bg);
+    padding: calc(24px + env(safe-area-inset-top)) 12px 24px max(12px, env(safe-area-inset-left));
+  }
+  .tab-btn { flex: 0 0 auto; width: 44px; height: 44px; min-height: 44px; padding: 0; }
+  .tab-btn.active { background: var(--hover); }
+  .tab-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .seite {
+    max-width: none;
+    margin-left: 72px;
+    padding: calc(32px + env(safe-area-inset-top)) max(32px, env(safe-area-inset-right)) calc(48px + env(safe-area-inset-bottom)) 32px;
+  }
+  .kopf, main { max-width: 1200px; margin-left: auto; margin-right: auto; }
+  .kopf { margin-bottom: 28px; }
+  .kopf h1 { font-size: 32px; }
+  .stapel { gap: 24px; }
+  .karte-kopf { padding: 20px 24px; }
+  .karte-kopf.flach { padding-bottom: 8px; }
+  .karte-inhalt { padding: 20px 24px; }
+  .zeile, .leer, .noch-zeit > summary { padding-left: 24px; padding-right: 24px; }
+  .thema { padding: 18px 24px; }
+  .vergangen-extra { padding: 0 24px 14px; }
+  .kacheln { padding: 8px 16px 16px; }
+  .kpi-streifen {
+    grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+    background: var(--border); border: 1px solid var(--border); border-radius: var(--radius-card);
+    overflow: hidden; margin-bottom: 24px;
+  }
+  .kpi-zelle { border: 0; border-radius: 0; padding: 20px 22px 22px; }
+  .kpi-wert { font-size: 30px; }
+  .heute-raster { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  .raster { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
+  .detail { padding-left: 32px; padding-right: 32px; }
+}

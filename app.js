@@ -11,7 +11,7 @@ const PRIORITAET_REIHENFOLGE = { hoch: 0, mittel: 1, niedrig: 2 };
 const LERNSTAND_WERTE = new Set(["verstanden", "teilweise", "offen"]);
 const KLAUSUR_COUNTDOWN_ROT_TAGE = 3;
 const KLAUSUR_COUNTDOWN_GELB_TAGE = 7;
-const WIEDERHOLUNG_DIESE_WOCHE_TAGE = 7;
+const KLAUSUR_BALD_TAGE = 7; // Aufgaben mit Klausur im Fach in <= X Tagen -> Badge "Klausur bald"
 const LK_FAECHER = new Set(["Mathe-LK", "Physik-LK", "Geschichte"]);
 const GEWICHT_LK = { schriftlich: 0.4, muendlich: 0.6 };
 const GEWICHT_GK = { schriftlich: 0.3, muendlich: 0.7 };
@@ -20,6 +20,11 @@ const WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "
 const BEGLEITER_DATEI_NAME = "Begleiter-Uebersicht.md"; // liegt in Schule/ im Vault, wird von der Begleiter-Automatik geschrieben
 const BEGLEITER_NEU_TAGE = 7;       // Updates der letzten X Tage bekommen ein "Neu"-Badge
 const BEGLEITER_MAX_UPDATES = 5;    // so viele letzte Updates pro Fach anzeigen
+
+// Feste Drive-Ordner-ID des echten Vaults. Die Namenssuche allein hat
+// 2026-09 eine alte Vault-Kopie gleichen Namens erwischt (-> fehlende
+// Begleiter-Infos, veraltete Daten); sie ist nur noch Fallback.
+const VAULT_FOLDER_ID = "1GOFBNm2FztTj5XjNf8dTssn2Ai-F8z1X";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
@@ -273,6 +278,14 @@ function parseDeadline(text) {
   return new Date(jahr, monat - 1, tag);
 }
 
+// Klausuren wurden frueher zusaetzlich als Aufgabe eingetragen ("## Deutsch:
+// Klausur 1" mit Link auf [[Schule/Klausuren/...]]) - wie ist_klausur_eintrag()
+// in dashboard.py ausblenden, sie haben ihren eigenen Tab.
+const KLAUSUR_EINTRAG_TITEL = /^[^:]+:\s*Klausur\b/i;
+function istKlausurEintrag(titel, beschreibung) {
+  return KLAUSUR_EINTRAG_TITEL.test(titel || "") && (beschreibung || "").includes("[[Schule/Klausuren/");
+}
+
 function parseAufgabenDatei(text, dateiname) {
   const [, body] = splitFrontmatter(text);
   const bloecke = body.split(/^##[ \t]+/m).slice(1);
@@ -292,6 +305,7 @@ function parseAufgabenDatei(text, dateiname) {
     const fach = extrahiereFeld(block, "Fach") || "-";
     const beschreibung = extrahiereFeld(block, "Beschreibung");
 
+    if (istKlausurEintrag(titel, beschreibung)) continue;
     aufgaben.push({ titel, fach, deadline, prioritaet, status, beschreibung, dateiname });
   }
   return aufgaben;
@@ -415,29 +429,10 @@ function normalisiereThemen(wert) {
   return [String(wert)];
 }
 
-function normalisiereWiederholung(wert) {
-  if (typeof wert !== "object" || wert === null || Array.isArray(wert)) return null;
-  const naechsteFaellig = parseKlausurDatum(wert.naechste_faellig);
-  if (naechsteFaellig === null) return null;
-
-  const intervallWochen = Number.isFinite(Number(wert.intervall_wochen)) ? Number(wert.intervall_wochen) : 2;
-
-  const historie = [];
-  for (const eintrag of wert.historie || []) {
-    if (typeof eintrag !== "object" || eintrag === null) continue;
-    const datumText = String(eintrag.datum || "").trim();
-    const statusDanach = String(eintrag.status_danach || "").trim().toLowerCase();
-    if (datumText && LERNSTAND_WERTE.has(statusDanach)) {
-      historie.push({ datum: datumText, status_danach: statusDanach });
-    }
-  }
-  return { naechste_faellig: naechsteFaellig, intervall_wochen: intervallWochen, historie };
-}
-
 function normalisiereLernstandEintrag(wert) {
   if (typeof wert === "string") {
     const status = wert.trim().toLowerCase();
-    return { status: LERNSTAND_WERTE.has(status) ? status : "offen", zeit_minuten: 0, sessions: [], wiederholung: null };
+    return { status: LERNSTAND_WERTE.has(status) ? status : "offen", zeit_minuten: 0, sessions: [] };
   }
   if (typeof wert === "object" && wert !== null && !Array.isArray(wert)) {
     const status = String(wert.status || "").trim().toLowerCase();
@@ -458,10 +453,9 @@ function normalisiereLernstandEintrag(wert) {
       status: LERNSTAND_WERTE.has(status) ? status : "offen",
       zeit_minuten: zeitMinuten,
       sessions,
-      wiederholung: normalisiereWiederholung(wert.wiederholung),
     };
   }
-  return { status: "offen", zeit_minuten: 0, sessions: [], wiederholung: null };
+  return { status: "offen", zeit_minuten: 0, sessions: [] };
 }
 
 function normalisiereLernstand(themen, wert) {
@@ -475,6 +469,30 @@ function klausurFarbstufe(tageBis) {
   if (tageBis <= KLAUSUR_COUNTDOWN_ROT_TAGE) return "hoch";
   if (tageBis <= KLAUSUR_COUNTDOWN_GELB_TAGE) return "mittel";
   return "niedrig";
+}
+
+// Punkte als ganze Zahl 0-15, auch aus Strings wie "12" - Pendant zu
+// parse_punkte() in dashboard.py. null bei fehlendem/ungueltigem Wert.
+function parsePunkte(wert) {
+  if (wert === null || wert === undefined || typeof wert === "boolean") return null;
+  const zahl = Number(String(wert).trim().replace(",", "."));
+  if (String(wert).trim() === "" || !Number.isInteger(zahl) || zahl < 0 || zahl > 15) return null;
+  return zahl;
+}
+
+const FEHLERANALYSE_FELDER = ["thema", "fehler", "ursache", "verbesserung"];
+
+function normalisiereFehleranalyse(wert) {
+  if (!Array.isArray(wert)) return [];
+  const ergebnis = [];
+  for (let eintrag of wert) {
+    if (typeof eintrag === "string" && eintrag.trim()) eintrag = { fehler: eintrag };
+    if (typeof eintrag !== "object" || eintrag === null) continue;
+    const normal = {};
+    for (const feld of FEHLERANALYSE_FELDER) normal[feld] = String(eintrag[feld] ?? "").trim();
+    if (Object.values(normal).some(Boolean)) ergebnis.push(normal);
+  }
+  return ergebnis;
 }
 
 function parseKlausurDatei(text, titel, fachOrdnerName) {
@@ -495,6 +513,9 @@ function parseKlausurDatei(text, titel, fachOrdnerName) {
     themen,
     status,
     punkte,
+    punkteZahl: parsePunkte(fm.punkte),
+    fehleranalyse: normalisiereFehleranalyse(fm.fehleranalyse),
+    korrekturQuelle: String(fm.korrektur_quelle ?? "").trim(),
     lernstand: normalisiereLernstand(themen, fm.lernstand),
   };
 }
@@ -511,63 +532,33 @@ async function ladeKlausuren(klausurenOrdnerId) {
   return klausuren;
 }
 
+// Drei Gruppen wie sammle_alle_klausuren() in dashboard.py: anstehend
+// (ab heute), abzuhaken (Datum vorbei, aber noch nicht als geschrieben
+// markiert - zaehlt NICHT als ueberfaellig) und abgeschlossen (neueste zuerst).
 function sammleAlleKlausuren(klausuren, heute) {
   const anstehend = [];
+  const abzuhaken = [];
   const abgeschlossen = [];
   for (const k of klausuren) {
     const eintrag = { ...k, tage_bis: diffTage(k.datum, heute) };
     if (k.status === "abgeschlossen") abgeschlossen.push(eintrag);
+    else if (eintrag.tage_bis < 0) abzuhaken.push(eintrag);
     else anstehend.push(eintrag);
   }
   anstehend.sort((a, b) => a.datum - b.datum);
+  abzuhaken.sort((a, b) => a.datum - b.datum);
   abgeschlossen.sort((a, b) => b.datum - a.datum);
-  return [anstehend, abgeschlossen];
+  return [anstehend, abzuhaken, abgeschlossen];
 }
 
 function sammleKlausurVorschau(klausuren, heute) {
   const ergebnis = [];
   for (const k of klausuren) {
     const tageBis = diffTage(k.datum, heute);
-    if (tageBis >= 0 && tageBis <= KLAUSUR_VORSCHAU_TAGE) ergebnis.push({ ...k, tage_bis: tageBis });
+    if (tageBis >= 0 && tageBis <= KLAUSUR_VORSCHAU_TAGE && k.status !== "abgeschlossen") ergebnis.push({ ...k, tage_bis: tageBis });
   }
   ergebnis.sort((a, b) => a.datum - b.datum);
   return ergebnis;
-}
-
-// ===========================================================================
-// PARSING: WIEDERHOLUNGEN (Spaced Repetition, basiert auf lernstand-Feld)
-// ===========================================================================
-
-function sammleWiederholungen(klausuren, heute) {
-  const ergebnis = [];
-  for (const k of klausuren) {
-    if (k.status !== "abgeschlossen") continue;
-    for (const [thema, eintrag] of Object.entries(k.lernstand)) {
-      const w = eintrag.wiederholung;
-      if (!w) continue;
-      ergebnis.push({
-        fach: k.fach,
-        klausur_titel: k.titel,
-        klausur_datum: k.datum,
-        thema,
-        status_damals: eintrag.status,
-        naechste_faellig: w.naechste_faellig,
-        tage_bis: diffTage(w.naechste_faellig, heute),
-      });
-    }
-  }
-  ergebnis.sort((a, b) => a.naechste_faellig - b.naechste_faellig);
-  return ergebnis;
-}
-
-function kategorisiereWiederholungen(liste) {
-  const kategorien = { ueberfaellig: [], diese_woche: [], kommt_bald: [] };
-  for (const eintrag of liste) {
-    if (eintrag.tage_bis < 0) kategorien.ueberfaellig.push(eintrag);
-    else if (eintrag.tage_bis <= WIEDERHOLUNG_DIESE_WOCHE_TAGE) kategorien.diese_woche.push(eintrag);
-    else kategorien.kommt_bald.push(eintrag);
-  }
-  return kategorien;
 }
 
 // ===========================================================================
@@ -583,7 +574,9 @@ function leseNotenAusText(text) {
       if (typeof eintrag !== "object" || eintrag === null) continue;
       const bezeichnung = String(eintrag.bezeichnung || "").trim();
       const punkte = Number(eintrag.punkte);
-      if (bezeichnung && Number.isFinite(punkte)) ergebnis.push({ bezeichnung, punkte });
+      const datumRoh = eintrag.datum instanceof Date ? eintrag.datum.toISOString().slice(0, 10) : String(eintrag.datum ?? "").trim();
+      const datum = /^\d{4}-\d{2}-\d{2}$/.test(datumRoh) ? datumRoh : null;
+      if (bezeichnung && Number.isFinite(punkte)) ergebnis.push({ bezeichnung, punkte, datum });
     }
     return ergebnis;
   };
@@ -604,16 +597,26 @@ async function ladeNotenProFach(notenOrdnerId) {
   return notenProFach;
 }
 
+function isoDatum(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// Wie sammle_schriftliche_werte() in dashboard.py: Klausur-Punkte + manuelle
+// schriftliche Noten; eine manuelle Note mit gleichem Datum wie eine Klausur
+// MIT Punkten im selben Fach zaehlt nicht doppelt (Klausur hat Vorrang).
 function sammleSchriftlichPunkteProFach(klausuren, notenProFach) {
   const wertProFach = {};
+  const klausurDaten = {};
   for (const k of klausuren) {
-    if (k.status !== "abgeschlossen") continue;
-    const punkte = parseFloat(k.punkte);
-    if (!Number.isFinite(punkte)) continue;
-    (wertProFach[k.fachOrdnerName] ??= []).push(punkte);
+    if (k.status !== "abgeschlossen" || k.punkteZahl === null) continue;
+    (wertProFach[k.fachOrdnerName] ??= []).push(k.punkteZahl);
+    (klausurDaten[k.fachOrdnerName] ??= new Set()).add(isoDatum(k.datum));
   }
   for (const [fach, noten] of Object.entries(notenProFach)) {
-    for (const eintrag of noten.schriftlich) (wertProFach[fach] ??= []).push(eintrag.punkte);
+    for (const eintrag of noten.schriftlich) {
+      if (eintrag.datum && klausurDaten[fach]?.has(eintrag.datum)) continue;
+      (wertProFach[fach] ??= []).push(eintrag.punkte);
+    }
   }
   const ergebnis = {};
   for (const [fach, werte] of Object.entries(wertProFach)) {
@@ -691,16 +694,26 @@ function parseBegleiterUebersicht(text, heute) {
   return { faecher, stand: parseDatumIso(fm.stand) };
 }
 
-async function ladeBegleiter(schuleOrdnerId, heute) {
+// Gibt die geparste Uebersicht zurueck, oder bei fehlender/unlesbarer Datei
+// { fehlt: true, pfad, vaultId, schuleId, fehler } fuer einen aussagekraeftigen
+// Hinweis im Tab (welcher Ordner wurde durchsucht?).
+async function ladeBegleiter(schuleOrdnerId, heute, vaultId) {
+  const info = {
+    fehlt: true,
+    pfad: `${CONFIG.VAULT_ORDNER_NAME}/Schule/${BEGLEITER_DATEI_NAME}`,
+    vaultId,
+    schuleId: schuleOrdnerId,
+    fehler: null,
+  };
   try {
     const datei = await driveFindFileByName(BEGLEITER_DATEI_NAME, schuleOrdnerId);
-    if (!datei) return null;
+    if (!datei) return info;
     return parseBegleiterUebersicht(await driveGetFileContent(datei.id), heute);
   } catch (e) {
     // Die Begleiter-Uebersicht ist ein Zusatz - ein Fehler hier soll die
     // restlichen Tabs nicht blockieren.
     console.warn("Begleiter-Uebersicht konnte nicht geladen werden:", e);
-    return null;
+    return { ...info, fehler: e.message };
   }
 }
 
@@ -711,22 +724,43 @@ function begleiterSeitenUrl(url, seite) {
 
 let appDaten = null; // zuletzt geladener Zustand, fuer Klick-Handler der Detailansicht
 
+// Primaer die feste Ordner-ID. Nur wenn die nicht erreichbar ist (geloescht,
+// im Papierkorb, keine Rechte): Namenssuche, bei mehreren Treffern der
+// zuletzt geaenderte Ordner plus sichtbarer Hinweis.
 async function findeVaultOrdner() {
+  try {
+    const params = new URLSearchParams({ fields: "id, name, mimeType, trashed" });
+    const ordner = await driveFetchJson(`${DRIVE_API}/${VAULT_FOLDER_ID}?${params.toString()}`);
+    if (ordner && ordner.mimeType === FOLDER_MIME && !ordner.trashed) {
+      return { id: ordner.id, hinweis: null };
+    }
+  } catch (e) {
+    if (!accessToken) throw e; // 401: Sitzung abgelaufen, nicht auf Namenssuche ausweichen
+    console.warn("Vault-Ordner-ID nicht erreichbar, weiche auf Namenssuche aus:", e);
+  }
+
   const params = new URLSearchParams({
     q: `name='${qEscape(CONFIG.VAULT_ORDNER_NAME)}' and mimeType='${FOLDER_MIME}' and trashed=false`,
-    fields: "files(id, name)",
-    pageSize: "5",
+    fields: "files(id, name, modifiedTime)",
+    orderBy: "modifiedTime desc",
+    pageSize: "10",
   });
   const data = await driveFetchJson(`${DRIVE_API}?${params.toString()}`);
-  if (!data.files || data.files.length === 0) {
-    throw new Error(`Vault-Ordner '${CONFIG.VAULT_ORDNER_NAME}' nicht in Google Drive gefunden.`);
+  const treffer = (data.files || []).slice().sort((a, b) => String(b.modifiedTime).localeCompare(String(a.modifiedTime)));
+  if (!treffer.length) {
+    throw new Error(`Vault-Ordner weder per ID (${VAULT_FOLDER_ID}) noch per Name '${CONFIG.VAULT_ORDNER_NAME}' gefunden.`);
   }
-  return data.files[0].id;
+  let hinweis = `Feste Vault-Ordner-ID ${VAULT_FOLDER_ID} nicht erreichbar – verwende Ordner per Namenssuche (ID ${treffer[0].id}).`;
+  if (treffer.length > 1) {
+    hinweis = `Mehrere Vault-Ordner gefunden (${treffer.length}× „${CONFIG.VAULT_ORDNER_NAME}“) – verwende den zuletzt geänderten (ID ${treffer[0].id}). ` + hinweis;
+  }
+  return { id: treffer[0].id, hinweis };
 }
 
 async function ladeAlleDaten() {
   setStatus("Verbinde mit Google Drive ...");
-  const vaultId = await findeVaultOrdner();
+  const { id: vaultId, hinweis: vaultHinweis } = await findeVaultOrdner();
+  zeigeVaultHinweis(vaultHinweis);
 
   setStatus("Suche Ordnerstruktur ...");
   const [aufgabenOrdner, schuleOrdner] = await Promise.all([
@@ -746,31 +780,47 @@ async function ladeAlleDaten() {
     ladeKlausuren(klausurenOrdner.id),
     ladeNotenProFach(notenOrdner.id),
     driveListChildren(klausurenOrdner.id, ` and mimeType='${FOLDER_MIME}'`),
-    ladeBegleiter(schuleOrdner.id, heute),
+    ladeBegleiter(schuleOrdner.id, heute, vaultId),
   ]);
 
-  const [klausurenAnstehend, klausurenAbgeschlossen] = sammleAlleKlausuren(klausurenRoh, heute);
+  appDaten = baueAppDaten({
+    heute, aufgaben, klausurenRoh, notenProFach,
+    faecherListe: faecherOrdner.map((f) => f.name).sort(),
+    begleiter,
+  });
+
+  setStatus(`Zuletzt aktualisiert: ${new Date().toLocaleTimeString("de-DE")}`);
+  renderAlles();
+}
+
+function baueAppDaten({ heute, aufgaben, klausurenRoh, notenProFach, faecherListe, begleiter }) {
+  const [klausurenAnstehend, klausurenAbzuhaken, klausurenAbgeschlossen] = sammleAlleKlausuren(klausurenRoh, heute);
   const klausurVorschau = sammleKlausurVorschau(klausurenRoh, heute);
-  const wiederholungen = kategorisiereWiederholungen(sammleWiederholungen(klausurenRoh, heute));
-  const faecherListe = faecherOrdner.map((f) => f.name).sort();
   const schriftlichProFach = sammleSchriftlichPunkteProFach(klausurenRoh, notenProFach);
   const klausurNaeheProFach = berechneKlausurNaeheProFach(klausurenAnstehend);
 
-  appDaten = {
+  const daten = {
     heute,
     aufgaben: kategorisiereAufgaben(aufgaben, heute, klausurNaeheProFach),
     klausurVorschau,
     klausurenAnstehend,
+    klausurenAbzuhaken,
     klausurenAbgeschlossen,
     faecherListe,
     notenProFach,
     schriftlichProFach,
-    wiederholungen,
     begleiter,
+    heuteLernen: sammleHeuteLernen(klausurenAnstehend, klausurenRoh, heute),
   };
+  daten.kpis = berechneKpis(daten);
+  return daten;
+}
 
-  setStatus(`Zuletzt aktualisiert: ${new Date().toLocaleTimeString("de-DE")}`);
-  renderAlles();
+function zeigeVaultHinweis(text) {
+  const el = document.getElementById("vault-hinweis");
+  if (!el) return;
+  el.textContent = text || "";
+  el.hidden = !text;
 }
 
 function setStatus(text) {
@@ -778,348 +828,535 @@ function setStatus(text) {
 }
 
 // ===========================================================================
-// RENDERING
+// HEUTE-TAB + KPIs (1:1 portiert aus dashboard.py: sammle_heute_lernen(),
+// sammle_heutige_lernzeit(), berechne_kpis() - nur lesend)
 // ===========================================================================
 
+const HEUTE_KLAUSUR_FENSTER_TAGE = 21; // Klausur-Themen tauchen ab X Tagen vor der Klausur auf
+const HEUTE_MIN_OFFEN = 25;            // empfohlene Minuten je offenem Klausur-Thema
+const HEUTE_MIN_TEILWEISE = 15;        // empfohlene Minuten je teilweise verstandenem Thema
+const HEUTE_WICHTIG_SCORE = 60;        // score <= X -> "Jetzt wichtig", sonst "Wenn noch Zeit ist"
+
+// Schluessel wie (pfad_relativ, thema) in dashboard.py: Fach-Ordner/Titel + Thema
+const lernzeitSchluessel = (k, thema) => `${k.fachOrdnerName}/${k.titel}|${thema}`;
+
+function sammleHeutigeLernzeit(klausuren, heute) {
+  const heuteIso = isoDatum(heute);
+  const proThema = new Map();
+  let gesamt = 0;
+  for (const k of klausuren) {
+    for (const [thema, eintrag] of Object.entries(k.lernstand)) {
+      const minuten = eintrag.sessions.filter((s) => s.datum === heuteIso).reduce((a, s) => a + s.minuten, 0);
+      if (minuten) {
+        proThema.set(lernzeitSchluessel(k, thema), minuten);
+        gesamt += minuten;
+      }
+    }
+  }
+  return { gesamt, proThema };
+}
+
+function sammleHeuteLernen(klausurenAnstehend, alleKlausuren, heute) {
+  const { gesamt, proThema } = sammleHeutigeLernzeit(alleKlausuren, heute);
+  const eintraege = [];
+  for (const k of klausurenAnstehend) {
+    const tage = k.tage_bis;
+    if (!(tage >= 0 && tage <= HEUTE_KLAUSUR_FENSTER_TAGE)) continue;
+    const wann = tage === 0 ? "heute!" : tage === 1 ? "morgen" : `in ${tage} Tagen`;
+    for (const thema of k.themen) {
+      const eintrag = k.lernstand[thema];
+      if (eintrag.status === "verstanden") continue;
+      const offen = eintrag.status === "offen";
+      eintraege.push({
+        klausur: k,
+        fach: k.fach,
+        titel: thema,
+        wann,
+        status: eintrag.status,
+        minuten: offen ? HEUTE_MIN_OFFEN : HEUTE_MIN_TEILWEISE,
+        farbstufe: klausurFarbstufe(tage),
+        score: tage * 10 + (offen ? 0 : 3),
+        heuteMinuten: proThema.get(lernzeitSchluessel(k, thema)) || 0,
+      });
+    }
+  }
+  eintraege.sort((a, b) => a.score - b.score || a.fach.localeCompare(b.fach) || a.titel.localeCompare(b.titel));
+  const wichtig = eintraege.filter((e) => e.score <= HEUTE_WICHTIG_SCORE);
+  const spaeter = eintraege.filter((e) => e.score > HEUTE_WICHTIG_SCORE);
+  const nochEmpfohlen = wichtig.reduce((s, e) => s + Math.max(e.minuten - e.heuteMinuten, 0), 0);
+  return { wichtig, spaeter, nochEmpfohlen, heuteGesamt: gesamt };
+}
+
+function berechneKpis({ aufgaben, klausurenAnstehend, faecherListe, notenProFach, schriftlichProFach }) {
+  const gesamtpunkte = [];
+  for (const fach of faecherListe) {
+    const schriftlich = schriftlichProFach[fach] ? schriftlichProFach[fach].durchschnitt : null;
+    const muendliche = (notenProFach[fach] || { muendlich: [] }).muendlich;
+    const muendlich = muendliche.length ? muendliche[muendliche.length - 1].punkte : null;
+    const gesamt = berechneGesamtpunktzahl(fach, schriftlich, muendlich);
+    if (gesamt !== null) gesamtpunkte.push(gesamt);
+  }
+  return {
+    anstehendeKlausuren: klausurenAnstehend.length,
+    durchschnittPunkte: gesamtpunkte.length ? gesamtpunkte.reduce((a, b) => a + b, 0) / gesamtpunkte.length : null,
+    offeneAufgaben: aufgaben.ueberfaellig.length + aufgaben.heute.length + aufgaben.diese_woche.length + aufgaben.spaeter.length,
+    ueberfaellig: aufgaben.ueberfaellig.length,
+  };
+}
+
+// ===========================================================================
+// RENDERING - Design "Clean Dark" (Tokens identisch mit dashboard.py)
+// ===========================================================================
+
+const MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+
+// Schlichte Strich-Icons (24er-Raster, stroke 1.7, currentColor) - dieselben
+// Pfade wie ICON_PFADE in dashboard.py.
+const ICON_PFADE = {
+  heute: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/>',
+  aufgaben: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m8.5 12 2.5 2.5 5-5.5"/>',
+  klausuren: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  punkte: '<path d="M4 20h16M7 16.5v-6M12 16.5V5.5M17 16.5v-3.5"/>',
+  begleiter: '<path d="M5.5 4.5h10.5a2.5 2.5 0 0 1 2.5 2.5v13H8a2.5 2.5 0 0 1-2.5-2.5z"/><path d="M5.5 17.5A2.5 2.5 0 0 1 8 15h10.5"/>',
+  uhr: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  chevron: '<path d="m9.5 6 6 6-6 6"/>',
+  extern: '<path d="M14 4.5h5.5V10M19.5 4.5 11 13M18 14v4.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1H10"/>',
+  zurueck: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  hinweis: '<circle cx="12" cy="12" r="8.5"/><path d="M12 8v5M12 16.2v.1"/>',
+  aktualisieren: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4.5H15"/>',
+  abmelden: '<path d="M12 3.5v8M6.7 6.7a7.5 7.5 0 1 0 10.6 0"/>',
+};
+
+function icon(name, groesse = 18, klasse = "icon") {
+  return `<svg class="${klasse}" width="${groesse}" height="${groesse}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICON_PFADE[name]}</svg>`;
+}
+
+const chevron = () => icon("chevron", 16, "icon chevron");
+
+// Farblogik: hoch -> --urgent (einzige Signalfarbe), mittel -> --text, niedrig -> --muted
+const ton = (farbstufe) => (["hoch", "mittel", "niedrig"].includes(farbstufe) ? `ton-${farbstufe}` : "ton-niedrig");
+
+function countdownText(tage) {
+  if (tage === 0) return "heute";
+  if (tage === 1) return "morgen";
+  if (tage === -1) return "gestern";
+  if (tage < 0) return `vor ${Math.abs(tage)} Tagen`;
+  return `in ${tage} Tagen`;
+}
+
+function formatiereDatumKopf(d) {
+  return `${WOCHENTAGE[(d.getDay() + 6) % 7]}, ${d.getDate()}. ${MONATE[d.getMonth()]}`;
+}
+
+const minutenKurz = (m) => (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}` : `${m} min`);
+
+function karteHtml(titel, inhalt, { meta = "", titelKlasse = "", flach = false } = {}) {
+  return `
+    <section class="karte">
+      <div class="karte-kopf${flach ? " flach" : ""}"><h2 class="${titelKlasse}">${titel}</h2>${meta ? `<span class="karte-meta">${meta}</span>` : ""}</div>
+      ${inhalt}
+    </section>`;
+}
+
 function renderAlles() {
+  renderKopf();
+  renderHeuteTab();
   renderAufgabenTab();
   renderKlausurenTab();
   renderPunkteTab();
-  renderWiederholenTab();
   renderBegleiterTab();
 }
 
-function aufgabeKarteHtml(a) {
-  // Klausurnaehe-Badge: sichtbar (nicht erst im Dropdown), warum eine
-  // Aufgabe innerhalb ihrer Kategorie nach oben sortiert wurde - gleiche
-  // Ampel-Farblogik (rot/gelb/gruen) wie die Klausur-Countdowns sonst auch.
-  let klausurBadgeHtml = "";
-  if (a.klausurTage !== null && a.klausurTage !== undefined) {
-    const farbstufe = klausurFarbstufe(a.klausurTage);
-    let text;
-    if (a.klausurTage === 0) text = "Klausur heute!";
-    else if (a.klausurTage === 1) text = "Klausur morgen";
-    else if (a.klausurTage < 0) text = `Klausur ${Math.abs(a.klausurTage)} Tage überfällig`;
-    else text = `Klausur in ${a.klausurTage} Tagen`;
-    klausurBadgeHtml = `<span class="badge badge-${esc(farbstufe)} klausurnaehe-badge" title="Wegen anstehender Klausur im gleichen Fach hochpriorisiert">🎓 ${esc(text)}</span>`;
-  }
-
-  return `
-    <div class="karte prioritaet-${esc(a.prioritaet)}">
-      <div class="titel">${esc(a.titel)}</div>
-      <div class="deadline">${esc(formatiereDatumLang(a.deadline))}</div>
-      ${klausurBadgeHtml}
-      <details class="details-dropdown">
-        <summary>Details</summary>
-        <div><strong>Fach:</strong> ${esc(a.fach)}</div>
-        ${a.beschreibung ? `<div><strong>Beschreibung:</strong> ${esc(a.beschreibung)}</div>` : ""}
-        <div><strong>Status:</strong> ${esc(a.status)}</div>
-      </details>
-    </div>`;
+function renderKopf() {
+  document.getElementById("kopf-datum").textContent = formatiereDatumKopf(appDaten.heute);
+  const chip = document.getElementById("offen-chip");
+  chip.innerHTML = `${icon("uhr", 16)}<span><span class="mono">${appDaten.heuteLernen.nochEmpfohlen}</span> Min offen</span>`;
+  chip.hidden = false;
 }
 
-function abschnittHtml(titel, liste, renderKarte, { klasseZusatz = "", leerText = null } = {}) {
-  if (liste.length === 0 && !leerText) return "";
-  const inhalt = liste.length
-    ? `<div class="karten-liste">${liste.map(renderKarte).join("")}</div>`
-    : `<div class="leer-hinweis">${esc(leerText)}</div>`;
+// --- Heute -------------------------------------------------------------------
+
+function heuteZeileHtml(e, index, liste) {
+  const rest = Math.max(e.minuten - e.heuteMinuten, 0);
+  let meta = `${esc(e.fach)} · Klausur ${esc(e.wann)} · ${esc(e.status)}`;
+  if (e.heuteMinuten && rest) meta += ` · heute schon ${e.heuteMinuten} min`;
+  if (!rest) meta += " · Pensum erreicht";
   return `
-    <div class="abschnitt ${klasseZusatz}">
-      <h2>${esc(titel)} <span class="zaehler">(${liste.length})</span></h2>
-      ${inhalt}
-    </div>`;
+    <li><button type="button" class="zeile" data-heute-liste="${liste}" data-heute-index="${index}">
+      <span class="punkt ${ton(e.farbstufe)}"></span>
+      <span class="zeile-text"><span class="zeile-titel">${esc(e.titel)}</span><span class="zeile-meta">${meta}</span></span>
+      <span class="zahl${rest ? "" : " ton-niedrig"}">${rest ? esc(minutenKurz(rest)) : "fertig"}</span>
+    </button></li>`;
 }
 
-// Hero-Kachel ganz oben im Aufgaben-Tab: die zeitlich naechste anstehende
-// Klausur mit grossem Countdown - Pendant zu render_naechste_klausur_kachel()
-// im Desktop-Dashboard (dashboard.py), gleiches Design/gleiche Ampel-Logik.
-function naechsteKlausurAbschnittHtml(klausurenAnstehend) {
-  if (!klausurenAnstehend.length) {
+function naechsteKlausurenHtml(klausuren) {
+  if (!klausuren.length) return karteHtml("Nächste Klausuren", `<p class="leer">Aktuell keine Klausur geplant.</p>`);
+  const kacheln = klausuren.slice(0, 4).map((k, i) => {
+    const themen = k.themen.length;
+    const verstanden = Object.values(k.lernstand).filter((e) => e.status === "verstanden").length;
+    const anteil = themen ? Math.round((verstanden / themen) * 100) : 0;
+    const label = k.tage_bis === 0 ? "heute" : k.tage_bis === 1 ? "Tag" : "Tage";
+    const themenText = themen ? `${verstanden} von ${themen} Themen` : "keine Themen";
     return `
-      <div class="abschnitt">
-        <div class="karte naechste-klausur-karte naechste-klausur-leer">
-          <div class="leer-hinweis" style="padding:0">📅 Aktuell keine Klausur geplant.</div>
-        </div>
-      </div>`;
-  }
+      <button type="button" class="kachel" data-anstehend-index="${i}">
+        <span class="countdown"><span class="countdown-zahl ${ton(klausurFarbstufe(k.tage_bis))}">${k.tage_bis}</span><span class="countdown-label">${label}</span></span>
+        <span class="kachel-mitte">
+          <span class="kachel-kopf"><span class="kachel-titel">${esc(k.fachOrdnerName)}</span><span class="kachel-meta">${themenText}</span></span>
+          <span class="balken" role="img" aria-label="${themenText} verstanden"><span style="width:${anteil}%"></span></span>
+        </span>
+      </button>`;
+  }).join("");
+  return karteHtml("Nächste Klausuren", `<div class="kacheln">${kacheln}</div>`, { flach: true });
+}
 
-  const k = klausurenAnstehend[0]; // bereits nach Datum sortiert, siehe sammleAlleKlausuren
-  const tage = k.tage_bis;
-  const farbstufe = klausurFarbstufe(tage);
-  let tageZahlText, tageLabel;
-  if (tage === 0) { tageZahlText = "Heute"; tageLabel = ""; }
-  else if (tage === 1) { tageZahlText = "1"; tageLabel = "Tag"; }
-  else { tageZahlText = String(tage); tageLabel = "Tage"; }
+function heuteAufgabenHtml(aufgaben, heute) {
+  const eintraege = [
+    ...aufgaben.ueberfaellig.map((a) => [a, "ueberfaellig"]),
+    ...aufgaben.heute.map((a) => [a, "heute"]),
+    ...aufgaben.diese_woche.map((a) => [a, "woche"]),
+  ];
+  const teile = [];
+  if (aufgaben.ueberfaellig.length) teile.push(`${aufgaben.ueberfaellig.length} überfällig`);
+  if (aufgaben.heute.length) teile.push(`${aufgaben.heute.length} heute`);
+  if (!eintraege.length) return karteHtml("Aufgaben", `<p class="leer">Keine Aufgaben für diese Woche.</p>`, { meta: "nichts dringend" });
+  const zeilen = eintraege.slice(0, 6).map(([a, art]) => {
+    let faellig, klasse;
+    if (art === "ueberfaellig") { faellig = countdownText(diffTage(dateOnly(a.deadline), heute)); klasse = "ton-hoch"; }
+    else if (art === "heute") { faellig = "heute"; klasse = "ton-mittel"; }
+    else { faellig = WOCHENTAGE[(a.deadline.getDay() + 6) % 7].slice(0, 2); klasse = "ton-niedrig"; }
+    return `<li class="zeile"><span class="zeile-text"><span class="zeile-titel">${esc(a.titel)}</span></span><span class="faellig ${klasse}">${esc(faellig)}</span></li>`;
+  }).join("");
+  const mehr = eintraege.length > 6 ? `<p class="karte-fuss">+ ${eintraege.length - 6} weitere im Bereich Aufgaben</p>` : "";
+  return karteHtml("Aufgaben", `<ul class="liste">${zeilen}</ul>${mehr}<p class="karte-fuss">Abhaken am Desktop</p>`, { meta: esc(teile.join(" · ") || "nichts dringend") });
+}
 
-  const zeitGesamt = klausurZeitGesamt(k);
-  let lernstandHtml = "";
-  if (k.themen.length) {
-    const zaehler = { verstanden: 0, teilweise: 0, offen: 0 };
-    for (const eintrag of Object.values(k.lernstand)) zaehler[eintrag.status] = (zaehler[eintrag.status] || 0) + 1;
-    lernstandHtml = `
-      <div class="lernstand-text naechste-klausur-lernstand">
-        <span class="badge badge-niedrig">✅ ${zaehler.verstanden}</span>
-        <span class="badge badge-mittel">🟡 ${zaehler.teilweise}</span>
-        <span class="badge badge-hoch">🔴 ${zaehler.offen}</span>
-        · ${esc(formatiereMinuten(zeitGesamt))} investiert
-      </div>`;
-  }
-
+function kpiHtml(kpis, heuteGesamt) {
+  const naechste = appDaten.klausurenAnstehend.length ? `nächste ${countdownText(appDaten.klausurenAnstehend[0].tage_bis)}` : "keine geplant";
+  const punkte = kpis.durchschnittPunkte !== null ? kpis.durchschnittPunkte.toFixed(1).replace(".", ",") : "–";
+  const zelle = (label, wert, zusatz, zusatzKlasse = "") => `
+    <div class="kpi-zelle">
+      <div class="kpi-label">${label}</div>
+      <div class="kpi-wert-zeile"><span class="kpi-wert">${wert}</span><span class="kpi-zusatz ${zusatzKlasse}">${esc(zusatz)}</span></div>
+    </div>`;
   return `
-    <div class="abschnitt">
-      <div class="karte naechste-klausur-karte klickbar" id="naechste-klausur-karte">
-        <div class="fach">Nächste Klausur · ${esc(k.fach)}</div>
-        <div class="naechste-klausur-titel">${esc(k.titel)}</div>
-        <div class="naechste-klausur-countdown">
-          <span class="naechste-klausur-tage naechste-klausur-${esc(farbstufe)}">${esc(tageZahlText)}</span>
-          ${tageLabel ? `<span class="naechste-klausur-tage-label">${esc(tageLabel)}</span>` : ""}
-        </div>
-        <div class="deadline">📅 ${esc(formatiereDatumLang(k.datum))}</div>
-        ${lernstandHtml}
+    <div class="kpi-streifen">
+      ${zelle("Anstehende Klausuren", kpis.anstehendeKlausuren, naechste)}
+      ${zelle("Ø Gesamtpunkte", punkte, "von 15")}
+      ${zelle("Offene Aufgaben", kpis.offeneAufgaben, kpis.ueberfaellig ? `${kpis.ueberfaellig} überfällig` : "keine überfällig", kpis.ueberfaellig ? "ton-hoch" : "")}
+      ${zelle("Heute gelernt", heuteGesamt, "Min")}
+    </div>`;
+}
+
+function renderHeuteTab() {
+  const { heuteLernen, kpis, klausurenAnstehend, aufgaben, heute } = appDaten;
+  const { wichtig, spaeter } = heuteLernen;
+  let wichtigInhalt;
+  if (wichtig.length) wichtigInhalt = `<ul class="liste">${wichtig.map((e, i) => heuteZeileHtml(e, i, "wichtig")).join("")}</ul>`;
+  else if (spaeter.length) wichtigInhalt = `<p class="leer">Nichts Dringendes – alles im grünen Bereich.</p>`;
+  else wichtigInhalt = `<p class="leer">Nichts zu lernen empfohlen – keine Klausur mit offenen Themen im ${HEUTE_KLAUSUR_FENSTER_TAGE}-Tage-Fenster.</p>`;
+  const spaeterHtml = spaeter.length
+    ? `<details class="noch-zeit"><summary>${chevron()} Wenn noch Zeit ist · ${spaeter.length} weitere</summary><ul class="liste">${spaeter.map((e, i) => heuteZeileHtml(e, i, "spaeter")).join("")}</ul></details>`
+    : "";
+
+  const container = document.getElementById("tab-heute");
+  container.innerHTML = `
+    ${kpiHtml(kpis, heuteLernen.heuteGesamt)}
+    <div class="heute-raster">
+      <section class="karte karte-wichtig">
+        <div class="karte-kopf"><h2>Jetzt wichtig</h2></div>
+        ${wichtigInhalt}
+        ${spaeterHtml}
+      </section>
+      <div class="stapel">
+        ${naechsteKlausurenHtml(klausurenAnstehend)}
+        ${heuteAufgabenHtml(aufgaben, heute)}
       </div>
     </div>`;
+
+  container.querySelectorAll("[data-heute-index]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const liste = el.dataset.heuteListe === "spaeter" ? spaeter : wichtig;
+      zeigeKlausurDetail(liste[Number(el.dataset.heuteIndex)].klausur);
+    });
+  });
+  container.querySelectorAll("[data-anstehend-index]").forEach((el) => {
+    el.addEventListener("click", () => zeigeKlausurDetail(klausurenAnstehend[Number(el.dataset.anstehendIndex)]));
+  });
+}
+
+// --- Aufgaben --------------------------------------------------------------
+
+const PRIORITAET_TEXT = { hoch: "Priorität hoch", mittel: "Priorität mittel", niedrig: "Priorität niedrig" };
+
+function aufgabeKarteHtml(a, { ueberfaellig = false, erledigt = false } = {}) {
+  // "Klausur bald": Aufgabe eines Fachs mit Klausur in <= KLAUSUR_BALD_TAGE Tagen
+  const bald = !erledigt && a.klausurTage !== null && a.klausurTage !== undefined && a.klausurTage >= 0 && a.klausurTage <= KLAUSUR_BALD_TAGE
+    ? `<span class="pill ton-hoch" title="Wegen anstehender Klausur im gleichen Fach hochpriorisiert">Klausur bald · ${esc(countdownText(a.klausurTage))}</span>`
+    : "";
+  const fach = a.fach && a.fach !== "-" && a.fach !== "–" ? `${esc(a.fach)} · ` : "";
+  return `
+    <li class="zeile aufgabe-zeile${erledigt ? " erledigt" : ""}">
+      <span class="punkt ${erledigt ? "ton-niedrig" : ton(a.prioritaet)}" title="${esc(PRIORITAET_TEXT[a.prioritaet] || "")}"></span>
+      <div class="zeile-text">
+        <div class="zeile-titel">${esc(a.titel)}</div>
+        <div class="zeile-meta">${fach}<span class="${ueberfaellig ? "ton-hoch" : ""}">${esc(formatiereDatumLang(a.deadline))}</span> · ${esc(PRIORITAET_TEXT[a.prioritaet] || a.prioritaet)}</div>
+        ${bald ? `<div class="pill-reihe">${bald}</div>` : ""}
+        <details class="aufklapper">
+          <summary>${chevron()} Details</summary>
+          <div class="aufklapper-inhalt">
+            ${a.beschreibung ? `<p>${esc(a.beschreibung)}</p>` : ""}
+            <p>Status: ${esc(a.status)}</p>
+          </div>
+        </details>
+      </div>
+    </li>`;
+}
+
+function listenKarteHtml(titel, liste, renderZeile, { leerText = null, titelKlasse = "", meta = "" } = {}) {
+  if (liste.length === 0 && !leerText) return "";
+  const inhalt = liste.length ? `<ul class="liste">${liste.map(renderZeile).join("")}</ul>` : `<p class="leer">${esc(leerText)}</p>`;
+  return karteHtml(`${esc(titel)} <span class="zaehler">${liste.length}</span>`, inhalt, { titelKlasse, meta });
 }
 
 function renderAufgabenTab() {
-  const { aufgaben, klausurVorschau, klausurenAnstehend } = appDaten;
-  let html = "";
-  html += naechsteKlausurAbschnittHtml(klausurenAnstehend);
-  html += abschnittHtml("Überfällig", aufgaben.ueberfaellig, aufgabeKarteHtml, { klasseZusatz: "abschnitt-ueberfaellig" });
-  html += abschnittHtml("Heute fällig", aufgaben.heute, aufgabeKarteHtml);
-  html += abschnittHtml("Diese Woche", aufgaben.diese_woche, aufgabeKarteHtml);
-  html += abschnittHtml("Später", aufgaben.spaeter, aufgabeKarteHtml);
-
-  if (klausurVorschau.length) {
-    html += abschnittHtml(
-      "Nächste Klausuren (14 Tage)",
-      klausurVorschau,
-      (k) => `
-        <div class="karte klausur-karte">
-          <div class="fach-zeile">
-            <span class="fach">${esc(k.fach)}</span>
-            <span class="badge badge-${esc(klausurFarbstufe(k.tage_bis))}">${k.tage_bis} Tag(e)</span>
-          </div>
-          <div class="titel">${esc(k.titel)}</div>
-          <div class="deadline">${esc(formatiereDatumKurz(k.datum))}</div>
-        </div>`
-    );
-  }
+  // Nur echte Aufgaben - Klausuren stehen unter Heute ("Naechste Klausuren")
+  // und im Klausuren-Tab.
+  const { aufgaben } = appDaten;
+  let html = listenKarteHtml("Überfällig", aufgaben.ueberfaellig, (a) => aufgabeKarteHtml(a, { ueberfaellig: true }), { titelKlasse: "ton-hoch" });
+  html += listenKarteHtml("Heute fällig", aufgaben.heute, (a) => aufgabeKarteHtml(a), { leerText: "Nichts heute fällig." });
+  html += listenKarteHtml("Diese Woche", aufgaben.diese_woche, (a) => aufgabeKarteHtml(a), { leerText: "Nichts diese Woche fällig." });
+  html += listenKarteHtml("Später", aufgaben.spaeter, (a) => aufgabeKarteHtml(a), { leerText: "Keine weiteren Aufgaben." });
 
   if (aufgaben.abgeschlossen.length) {
     html += `
-      <details class="abschnitt">
-        <summary style="cursor:pointer;color:var(--text-mild)">Vergangene Aufgaben (${aufgaben.abgeschlossen.length})</summary>
-        <div class="karten-liste" style="margin-top:0.7rem">${aufgaben.abgeschlossen.map(aufgabeKarteHtml).join("")}</div>
-      </details>`;
+      <section class="karte">
+        <details>
+          <summary class="karte-kopf"><h2>${chevron()} Vergangene Aufgaben <span class="zaehler">${aufgaben.abgeschlossen.length}</span></h2></summary>
+          <ul class="liste">${aufgaben.abgeschlossen.map((a) => aufgabeKarteHtml(a, { erledigt: true })).join("")}</ul>
+        </details>
+      </section>`;
   }
 
-  if (!html) html = `<div class="leer-hinweis">Keine offenen Aufgaben gefunden.</div>`;
-  document.getElementById("tab-aufgaben").innerHTML = html;
-
-  const naechsteKarte = document.getElementById("naechste-klausur-karte");
-  if (naechsteKarte && klausurenAnstehend.length) {
-    naechsteKarte.addEventListener("click", () => zeigeKlausurDetail(klausurenAnstehend[0]));
-  }
+  document.getElementById("tab-aufgaben").innerHTML = `<div class="stapel">${html}</div>`;
 }
+
+// --- Klausuren ---------------------------------------------------------------
 
 function klausurZeitGesamt(k) {
   return Object.values(k.lernstand).reduce((s, e) => s + e.zeit_minuten, 0);
 }
 
-function klausurKarteHtml(k, index, istAbgeschlossen) {
-  const badge = istAbgeschlossen
-    ? `<span class="badge badge-niedrig">${esc(k.punkte || "-")} Pkt.</span>`
-    : `<span class="badge badge-${esc(klausurFarbstufe(k.tage_bis))}">${k.tage_bis} Tag(e)</span>`;
+function ergebnisBadgeHtml(k) {
+  if (k.punkteZahl !== null) return `<span class="pill wert">${k.punkteZahl} P.</span>`;
+  if (k.punkte) return `<span class="pill wert">${esc(k.punkte)}</span>`;
+  return `<span class="pill ton-niedrig">Ergebnis ausstehend</span>`;
+}
+
+function fehleranalyseHtml(k) {
+  const link = /^https?:\/\//.test(k.korrekturQuelle)
+    ? `<a class="extern-link" href="${esc(k.korrekturQuelle)}" target="_blank" rel="noopener">Korrigierte Klausur ${icon("extern", 14)}</a>`
+    : "";
+  if (!k.fehleranalyse.length) return link ? `<div>${link}</div>` : "";
+  const labels = [["thema", "Thema"], ["fehler", "Fehler"], ["ursache", "Ursache"], ["verbesserung", "Verbesserung"]];
+  const punkte = k.fehleranalyse.map((e) => `
+    <li>${labels.filter(([feld]) => e[feld]).map(([feld, label]) => `<dl class="fehler-feld"><dt>${label}</dt><dd>${esc(e[feld])}</dd></dl>`).join("")}</li>`).join("");
   return `
-    <div class="karte klausur-karte klickbar" data-klausur-index="${index}" data-klausur-typ="${istAbgeschlossen ? "abgeschlossen" : "anstehend"}">
-      <div class="fach-zeile">
-        <span class="fach">${esc(k.fach)}</span>
-        ${badge}
-      </div>
-      <div class="titel">${esc(k.titel)}</div>
-      <div class="deadline">${esc(formatiereDatumKurz(k.datum))} &middot; ${esc(formatiereMinuten(klausurZeitGesamt(k)))} investiert</div>
-    </div>`;
+    <details class="aufklapper">
+      <summary>${chevron()} Fehleranalyse <span class="zaehler">${k.fehleranalyse.length}</span></summary>
+      <div class="aufklapper-inhalt"><ul class="fehler-liste">${punkte}</ul>${link}</div>
+    </details>`;
+}
+
+// typ: "anstehend" | "abzuhaken" | "abgeschlossen" (Index bezieht sich auf die jeweilige Liste)
+function klausurKarteHtml(k, index, typ) {
+  const themen = k.themen.length;
+  const verstanden = Object.values(k.lernstand).filter((e) => e.status === "verstanden").length;
+  const meta = `${esc(formatiereDatumKurz(k.datum))}${themen ? ` · ${verstanden} von ${themen} Themen verstanden` : ""} · <span class="mono">${esc(formatiereMinuten(klausurZeitGesamt(k)))}</span>`;
+  if (typ === "abgeschlossen") {
+    return `
+      <li class="vergangen">
+        <button type="button" class="zeile" data-klausur-index="${index}" data-klausur-typ="${typ}">
+          <span class="zeile-text"><span class="zeile-titel">${esc(k.fach)} · ${esc(k.titel)}</span><span class="zeile-meta">${esc(formatiereDatumKurz(k.datum))}</span></span>
+          ${ergebnisBadgeHtml(k)}
+        </button>
+        ${k.fehleranalyse.length || k.korrekturQuelle ? `<div class="vergangen-extra">${fehleranalyseHtml(k)}</div>` : ""}
+      </li>`;
+  }
+  const farbstufe = typ === "abzuhaken" ? "hoch" : klausurFarbstufe(k.tage_bis);
+  return `
+    <li><button type="button" class="zeile" data-klausur-index="${index}" data-klausur-typ="${typ}">
+      <span class="punkt ${ton(farbstufe)}"></span>
+      <span class="zeile-text"><span class="zeile-titel">${esc(k.fach)} · ${esc(k.titel)}</span><span class="zeile-meta">${meta}</span></span>
+      <span class="zahl ${ton(farbstufe)}">${esc(countdownText(k.tage_bis))}</span>
+    </button></li>`;
 }
 
 function renderKlausurenTab() {
-  const { klausurenAnstehend, klausurenAbgeschlossen } = appDaten;
-  let html = abschnittHtml(
-    "Anstehende Klausuren",
-    klausurenAnstehend,
-    (k, i) => klausurKarteHtml(k, klausurenAnstehend.indexOf(k), false)
-  );
+  const { klausurenAnstehend, klausurenAbzuhaken, klausurenAbgeschlossen } = appDaten;
+  const listen = { anstehend: klausurenAnstehend, abzuhaken: klausurenAbzuhaken, abgeschlossen: klausurenAbgeschlossen };
+  let html = "";
 
-  if (klausurenAbgeschlossen.length) {
-    html += `
-      <details class="abschnitt">
-        <summary style="cursor:pointer;color:var(--text-mild)">Abgeschlossene Klausuren (${klausurenAbgeschlossen.length})</summary>
-        <div class="karten-liste" style="margin-top:0.7rem">
-          ${klausurenAbgeschlossen.map((k) => klausurKarteHtml(k, klausurenAbgeschlossen.indexOf(k), true)).join("")}
-        </div>
-      </details>`;
+  // Nur lesend: abhaken geht bewusst nur am Desktop (Mobile schreibt nie).
+  if (klausurenAbzuhaken.length) {
+    html += listenKarteHtml(`Geschrieben?`, klausurenAbzuhaken, (k, i) => klausurKarteHtml(k, i, "abzuhaken"),
+      { titelKlasse: "ton-hoch", meta: "am Desktop abhaken" });
   }
-
-  if (!klausurenAnstehend.length && !klausurenAbgeschlossen.length) {
-    html = `<div class="leer-hinweis">Keine Klausuren gefunden.</div>`;
-  }
+  html += listenKarteHtml("Anstehende Klausuren", klausurenAnstehend, (k, i) => klausurKarteHtml(k, i, "anstehend"),
+    { leerText: "Keine anstehenden Klausuren." });
+  html += `
+    <section class="karte">
+      <details open>
+        <summary class="karte-kopf"><h2>${chevron()} Vergangene Klausuren <span class="zaehler">${klausurenAbgeschlossen.length}</span></h2><span class="karte-meta">Punkte am Desktop</span></summary>
+        ${klausurenAbgeschlossen.length
+          ? `<ul class="liste">${klausurenAbgeschlossen.map((k, i) => klausurKarteHtml(k, i, "abgeschlossen")).join("")}</ul>`
+          : `<p class="leer">Noch keine vergangenen Klausuren.</p>`}
+      </details>
+    </section>`;
 
   const container = document.getElementById("tab-klausuren");
-  container.innerHTML = html;
+  container.innerHTML = `<div class="stapel">${html}</div>`;
   container.querySelectorAll("[data-klausur-index]").forEach((el) => {
     el.addEventListener("click", () => {
-      const typ = el.dataset.klausurTyp;
-      const idx = Number(el.dataset.klausurIndex);
-      const klausur = typ === "abgeschlossen" ? klausurenAbgeschlossen[idx] : klausurenAnstehend[idx];
-      zeigeKlausurDetail(klausur);
+      const liste = listen[el.dataset.klausurTyp] || [];
+      const klausur = liste[Number(el.dataset.klausurIndex)];
+      if (klausur) zeigeKlausurDetail(klausur);
     });
   });
 }
 
+const LERNSTAND_TON = { verstanden: "ton-mittel", teilweise: "ton-niedrig", offen: "ton-hoch" };
+
 function zeigeKlausurDetail(k) {
   const overlay = document.getElementById("klausur-detail-overlay");
-  let html = `<a href="#" class="zurueck-link" id="detail-zurueck">&larr; Zurück</a>`;
-  html += `<div class="fach">${esc(k.fach)}</div>`;
-  html += `<h2 style="margin:0.2rem 0 1rem">${esc(k.titel)}</h2>`;
-  html += `<div class="deadline" style="margin-bottom:1rem">${esc(formatiereDatumLang(k.datum))} &middot; Status: ${esc(k.status || "offen")}</div>`;
-
-  for (const thema of k.themen) {
-    const eintrag = k.lernstand[thema];
-    html += `
-      <div class="thema-block">
-        <h3>${esc(thema)} <span class="badge badge-${esc(eintrag.status)}">${esc(eintrag.status)}</span></h3>
-        <div class="thema-meta">${esc(formatiereMinuten(eintrag.zeit_minuten))} investiert</div>
-        ${eintrag.sessions.length ? `
-          <details class="details-dropdown">
-            <summary>${eintrag.sessions.length} Session(s)</summary>
-            ${eintrag.sessions.map((s) => `<div>${esc(s.datum)}: ${esc(formatiereMinuten(s.minuten))}</div>`).join("")}
+  const tage = diffTage(k.datum, appDaten.heute);
+  let countdown = countdownText(tage);
+  if (tage < 0 && k.status !== "abgeschlossen") countdown += " – am Desktop abhaken";
+  const themen = k.themen.map((thema) => {
+    const e = k.lernstand[thema];
+    return `
+      <li class="thema">
+        <div class="thema-kopf">
+          <span class="punkt ${LERNSTAND_TON[e.status] || "ton-hoch"}"></span>
+          <span class="zeile-text"><span class="zeile-titel">${esc(thema)}</span><span class="zeile-meta">${esc(e.status)}</span></span>
+          <span class="zahl">${esc(formatiereMinuten(e.zeit_minuten))}</span>
+        </div>
+        ${e.sessions.length ? `
+          <details class="aufklapper">
+            <summary>${chevron()} Sessions <span class="zaehler">${e.sessions.length}</span></summary>
+            <ul class="sessions-liste">${e.sessions.slice().reverse().map((s) => `<li>${esc(s.datum)} · ${esc(formatiereMinuten(s.minuten))}</li>`).join("")}</ul>
           </details>` : ""}
-        ${eintrag.wiederholung ? `
-          <div class="thema-meta" style="margin-top:0.3rem">Nächste Wiederholung: ${esc(formatiereDatumKurz(eintrag.wiederholung.naechste_faellig))} (alle ${eintrag.wiederholung.intervall_wochen} Wochen)</div>` : ""}
-      </div>`;
-  }
+      </li>`;
+  }).join("");
 
-  overlay.innerHTML = html;
+  overlay.innerHTML = `
+    <div class="detail">
+      <button type="button" class="zurueck-link" id="detail-zurueck">${icon("zurueck")} Zurück</button>
+      <header class="detail-kopf">
+        <div class="kopf-datum">${esc(k.fach)} · ${esc(formatiereDatumLang(k.datum))}</div>
+        <h1>${esc(k.titel)}</h1>
+        <div class="pill-reihe">
+          <span class="pill ${tage >= 0 ? ton(klausurFarbstufe(tage)) : k.status === "abgeschlossen" ? "ton-niedrig" : "ton-hoch"}">${esc(countdown)}</span>
+          <span class="pill">Status: ${esc(k.status || "offen")}</span>
+          <span class="pill">Investiert <span class="mono">${esc(formatiereMinuten(klausurZeitGesamt(k)))}</span></span>
+          ${k.status === "abgeschlossen" ? ergebnisBadgeHtml(k) : ""}
+        </div>
+      </header>
+      <div class="stapel">
+        ${k.status === "abgeschlossen" && (k.fehleranalyse.length || k.korrekturQuelle) ? `<section class="karte"><div class="karte-inhalt">${fehleranalyseHtml(k)}</div></section>` : ""}
+        ${karteHtml(`Themen <span class="zaehler">${k.themen.length}</span>`, k.themen.length ? `<ul class="liste">${themen}</ul>` : `<p class="leer">Keine Themen hinterlegt.</p>`, { meta: "Timer am Desktop" })}
+      </div>
+    </div>`;
   overlay.hidden = false;
-  document.getElementById("detail-zurueck").addEventListener("click", (ev) => {
-    ev.preventDefault();
-    overlay.hidden = true;
-  });
+  overlay.scrollTop = 0;
+  const zurueck = document.getElementById("detail-zurueck");
+  zurueck.focus();
+  zurueck.addEventListener("click", () => { overlay.hidden = true; });
 }
+
+// --- Punkte --------------------------------------------------------------------
 
 function renderPunkteTab() {
   const { faecherListe, notenProFach, schriftlichProFach } = appDaten;
   if (!faecherListe.length) {
-    document.getElementById("tab-punkte").innerHTML = `<div class="leer-hinweis">Keine Fächer gefunden.</div>`;
+    document.getElementById("tab-punkte").innerHTML = `<section class="karte"><p class="leer">Keine Fächer gefunden.</p></section>`;
     return;
   }
 
-  const html = faecherListe
-    .map((fach) => {
-      const schriftlichInfo = schriftlichProFach[fach];
-      const muendlicheListe = (notenProFach[fach] || { muendlich: [] }).muendlich;
-      const muendlichPunkte = muendlicheListe.length ? muendlicheListe[muendlicheListe.length - 1].punkte : null;
-      const schriftlichAvg = schriftlichInfo ? schriftlichInfo.durchschnitt : null;
-      const gesamt = berechneGesamtpunktzahl(fach, schriftlichAvg, muendlichPunkte);
+  const html = faecherListe.map((fach) => {
+    const schriftlichInfo = schriftlichProFach[fach];
+    const muendlicheListe = (notenProFach[fach] || { muendlich: [] }).muendlich;
+    const muendlich = muendlicheListe.length ? muendlicheListe[muendlicheListe.length - 1] : null;
+    const schriftlichAvg = schriftlichInfo ? schriftlichInfo.durchschnitt : null;
+    const gesamt = berechneGesamtpunktzahl(fach, schriftlichAvg, muendlich ? muendlich.punkte : null);
+    const gewicht = LK_FAECHER.has(fach) ? GEWICHT_LK : GEWICHT_GK;
+    const kursart = LK_FAECHER.has(fach) ? "LK" : "GK";
+    return `
+      <section class="karte">
+        <div class="karte-kopf"><h2>${esc(fach)}</h2><span class="pill">${kursart} · ${Math.round(gewicht.schriftlich * 100)}/${Math.round(gewicht.muendlich * 100)}</span></div>
+        <div class="karte-inhalt">
+          <div class="werte">
+            <div class="wert-zeile"><span class="label">Schriftlich</span><span>${schriftlichAvg !== null ? `<span class="wert">${schriftlichAvg.toFixed(1)}</span> <span class="hinweis-text">Ø aus ${schriftlichInfo.anzahl}</span>` : `<span class="hinweis-text">noch keine Note</span>`}</span></div>
+            <div class="wert-zeile"><span class="label">Mündlich</span><span>${muendlich ? `<span class="wert">${muendlich.punkte}</span> <span class="hinweis-text">${esc(muendlich.bezeichnung)}</span>` : `<span class="hinweis-text">noch keine Eintragung</span>`}</span></div>
+          </div>
+          <div class="abschnitt-trenner">
+            <div class="kpi-label">Gesamt</div>
+            ${gesamt !== null
+              ? `<div class="gesamt-zeile"><span class="gesamt">${Math.round(gesamt)}</span><span class="gesamt-genau">genau ${gesamt.toFixed(1)} von 15</span></div>`
+              : `<p class="hinweis-text" style="margin-top:6px">Noch unvollständig – schriftliche und/oder mündliche Note fehlt.</p>`}
+          </div>
+        </div>
+      </section>`;
+  }).join("");
 
-      return `
-        <div class="karte">
-          <div class="fach">${esc(fach)}</div>
-          <div class="punkte-zeile">
-            <span class="label">Schriftlich${schriftlichInfo ? ` (${schriftlichInfo.anzahl} Werte)` : ""}</span>
-            <span>${schriftlichAvg !== null ? schriftlichAvg.toFixed(1) : "-"}</span>
-          </div>
-          <div class="punkte-zeile">
-            <span class="label">Mündlich</span>
-            <span>${muendlichPunkte !== null ? muendlichPunkte : "-"}</span>
-          </div>
-          <div class="punkte-zeile">
-            <span class="label">Gesamt</span>
-            <span class="punkte-gesamt">${
-              gesamt !== null
-                // Wie im Desktop-Dashboard: gerundete Punktzahl gross, exakter
-                // Wert klein dahinter - vorher zeigten beide Apps hier
-                // unterschiedlich gerundete Zahlen.
-                ? `${Math.round(gesamt)} <span style="opacity:.65;font-weight:400;font-size:.85em">(genau: ${gesamt.toFixed(1)})</span>`
-                : "Noch unvollständig"
-            }</span>
-          </div>
-        </div>`;
-    })
-    .join("");
-
-  document.getElementById("tab-punkte").innerHTML = `<div class="karten-liste">${html}</div>`;
+  document.getElementById("tab-punkte").innerHTML = `<div class="raster">${html}</div>`;
 }
 
-function renderWiederholenTab() {
-  const { wiederholungen } = appDaten;
-  const karteHtml = (e) => `
-    <div class="karte">
-      <div class="fach-zeile">
-        <span class="fach">${esc(e.fach)}</span>
-        <span class="badge badge-${esc(klausurFarbstufe(e.tage_bis))}">${e.tage_bis} Tag(e)</span>
-      </div>
-      <div class="titel">${esc(e.thema)}</div>
-      <div class="deadline">aus: ${esc(e.klausur_titel)} &middot; damals: ${esc(e.status_damals)}</div>
-    </div>`;
-
-  let html = "";
-  html += abschnittHtml("Überfällig", wiederholungen.ueberfaellig, karteHtml, { klasseZusatz: "abschnitt-ueberfaellig" });
-  html += abschnittHtml("Diese Woche fällig", wiederholungen.diese_woche, karteHtml);
-  html += abschnittHtml("Kommt bald", wiederholungen.kommt_bald, karteHtml);
-
-  if (!html) html = `<div class="leer-hinweis">Keine fälligen Wiederholungen.</div>`;
-  document.getElementById("tab-wiederholen").innerHTML = html;
-}
+// --- Begleiter -------------------------------------------------------------------
 
 function renderBegleiterTab() {
   const container = document.getElementById("tab-begleiter");
   const daten = appDaten.begleiter;
-  if (!daten || !daten.faecher.length) {
-    container.innerHTML = `<div class="leer-hinweis">Noch keine Begleiter-Übersicht gefunden. Sie wird von der Begleiter-Automatik (Mo–Fr 14 Uhr) in <code>Schule/${esc(BEGLEITER_DATEI_NAME)}</code> angelegt.</div>`;
+  if (!daten || daten.fehlt) {
+    const details = daten
+      ? `<div class="hinweis-details">Gesucht: <code>${esc(daten.pfad)}</code><br>Vault-Ordner-ID: <code>${esc(daten.vaultId)}</code><br>Schule-Ordner-ID: <code>${esc(daten.schuleId)}</code>${daten.fehler ? `<br>Fehler: ${esc(daten.fehler)}` : ""}</div>`
+      : "";
+    container.innerHTML = `<section class="karte"><div class="leer">Keine Begleiter-Übersicht gefunden. Sie wird von der Begleiter-Automatik (Mo–Fr 14 Uhr) in <code>Schule/${esc(BEGLEITER_DATEI_NAME)}</code> angelegt.${details}</div></section>`;
     return;
   }
-
-  const neuAnzahl = daten.faecher.filter((f) => f.istNeu).length;
-  const kopf = `
-    <div class="begleiter-kopf">
-      <div class="kpi-kachel"><div class="kpi-wert">${neuAnzahl}</div><div class="kpi-label">Fächer mit neuem Stoff (${BEGLEITER_NEU_TAGE} Tage)</div></div>
-      <div class="kpi-kachel"><div class="kpi-wert">${daten.faecher.length}</div><div class="kpi-label">Begleiter insgesamt</div></div>
-    </div>`;
+  if (!daten.faecher.length) {
+    container.innerHTML = `<section class="karte"><p class="leer">Die Begleiter-Übersicht enthält noch keine Fächer.</p></section>`;
+    return;
+  }
 
   const karten = daten.faecher.map((f) => {
     const zuletztText = f.zuletzt
       ? (f.tageSeit === 0 ? "heute aktualisiert" : f.tageSeit === 1 ? "gestern aktualisiert" : `aktualisiert am ${formatiereDatumKurz(f.zuletzt)}`)
       : "noch keine Updates";
-    const updatesHtml = f.updates.length
-      ? `<ul class="begleiter-updates">${f.updates.map((u) => {
+    const updates = f.updates.length
+      ? f.updates.map((u) => {
           const link = begleiterSeitenUrl(f.url, u.seite);
-          const seiteHtml = u.seite
-            ? (link ? `<a class="begleiter-seite" href="${esc(link)}" target="_blank" rel="noopener">S. ${u.seite} ↗</a>` : `<span class="begleiter-seite">S. ${u.seite}</span>`)
+          const seite = u.seite
+            ? (link ? `<a class="begleiter-seite" href="${esc(link)}" target="_blank" rel="noopener">S. ${u.seite} ${icon("extern", 13)}</a>` : `<span class="begleiter-seite">S. ${u.seite}</span>`)
             : "";
+          const datum = u.datum ? `${String(u.datum.getDate()).padStart(2, "0")}.${String(u.datum.getMonth() + 1).padStart(2, "0")}.` : "";
           return `
-            <li>
-              <div class="begleiter-update-kopf">
-                <span class="begleiter-datum">${u.datum ? esc(formatiereDatumKurz(u.datum)) : ""}</span>
-                <span class="begleiter-thema">${esc(u.thema)}</span>
-                ${seiteHtml}
-              </div>
+            <div class="begleiter-update">
+              <div class="begleiter-update-kopf"><span class="begleiter-datum">${datum}</span><span class="begleiter-thema">${esc(u.thema)}</span>${seite}</div>
               ${u.zusammenfassung ? `<div class="begleiter-text">${esc(u.zusammenfassung)}</div>` : ""}
-            </li>`;
-        }).join("")}</ul>`
-      : "";
+            </div>`;
+        }).join("")
+      : `<p class="hinweis-text">Noch keine Updates.</p>`;
     return `
-      <div class="karte begleiter-karte${f.istNeu ? " begleiter-neu" : ""}">
-        <div class="fach-zeile">
-          <span class="fach">${esc(f.fach)}</span>
-          ${f.istNeu ? `<span class="badge badge-neu">Neu</span>` : ""}
+      <section class="karte">
+        <div class="karte-kopf"><div><h2>${esc(f.fach)}</h2><div class="zeile-meta">${esc(zuletztText)}${f.seiten ? ` · ${f.seiten} Seiten` : ""}</div></div>${f.istNeu ? `<span class="pill">Neu</span>` : ""}</div>
+        <div class="karte-inhalt">
+          ${updates}
+          ${f.url ? `<a class="btn btn-sekundaer btn-breit" href="${esc(f.url)}" target="_blank" rel="noopener">${icon("begleiter", 16)} Begleiter öffnen</a>` : ""}
         </div>
-        <div class="deadline">${esc(zuletztText)}${f.seiten ? ` · ${f.seiten} Seiten` : ""}</div>
-        ${updatesHtml}
-        ${f.url ? `<a class="btn begleiter-btn" href="${esc(f.url)}" target="_blank" rel="noopener">📖 Begleiter öffnen</a>` : ""}
-      </div>`;
+      </section>`;
   }).join("");
 
-  container.innerHTML = `${kopf}<div class="karten-liste" style="margin-top:1rem">${karten}</div>`;
+  container.innerHTML = `<div class="raster">${karten}</div>`;
 }
 
 // ===========================================================================
@@ -1127,6 +1364,8 @@ function renderBegleiterTab() {
 // ===========================================================================
 
 function zeigeAnmeldeAnsicht() {
+  document.getElementById("offen-chip").hidden = true;
+  document.getElementById("seitentitel").textContent = "Schul-Dashboard";
   document.getElementById("anmelde-bereich").hidden = false;
   document.getElementById("inhalt-bereich").hidden = true;
   document.getElementById("tabs").hidden = true;
@@ -1134,6 +1373,8 @@ function zeigeAnmeldeAnsicht() {
 }
 
 async function aufAnmeldungReagieren() {
+  const aktiv = document.querySelector(".tab-btn.active");
+  document.getElementById("seitentitel").textContent = aktiv ? aktiv.dataset.titel : "Heute";
   document.getElementById("anmelde-bereich").hidden = true;
   document.getElementById("inhalt-bereich").hidden = false;
   document.getElementById("tabs").hidden = false;
@@ -1149,10 +1390,16 @@ async function aufAnmeldungReagieren() {
 function initTabs() {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".tab-btn").forEach((b) => {
+        b.classList.remove("active");
+        b.removeAttribute("aria-current");
+      });
       btn.classList.add("active");
+      btn.setAttribute("aria-current", "page");
       document.querySelectorAll(".tab-inhalt").forEach((t) => (t.hidden = true));
       document.getElementById(`tab-${btn.dataset.tab}`).hidden = false;
+      document.getElementById("seitentitel").textContent = btn.dataset.titel;
+      window.scrollTo(0, 0);
     });
   });
 }
