@@ -29,6 +29,7 @@ löschen. Timer, „Minuten nachtragen“ und Lernstand-Status bleiben Desktop-o
 2. Anwendungstyp: **"Weboberfläche"**.
 3. Name frei wählbar.
 4. **Autorisierte JavaScript-Quellen**: hier trägst du die URL ein, unter der die App später erreichbar ist, z.B. `https://DEINNAME.github.io`. Für lokale Tests kannst du zusätzlich `http://localhost:8000` eintragen.
+   **Autorisierte Weiterleitungs-URIs** (seit 2026-09-27 Pflicht, die App meldet sich per Weiterleitung an): die volle App-Adresse **mit** Pfad und abschließendem `/`, z.B. `https://DEINNAME.github.io/schul-dashboard/` (für lokale Tests ggf. `http://localhost:8000/`).
 5. Erstellen → die **Client-ID** (endet auf `.apps.googleusercontent.com`) kopieren.
 
 ### 4. Client-ID eintragen
@@ -59,11 +60,13 @@ Tipp: Auf dem iPhone/iPad kannst du die Seite über Safari → Teilen → "Zum H
 
 ### Angemeldet bleiben
 
-Das Zugriffstoken läuft nach ca. 1 Stunde ab. Die App versucht deshalb bei jedem Öffnen automatisch und unsichtbar, ein neues Token zu holen (ohne dass du etwas tippen musst) — das klappt, solange du auf dem Gerät noch bei Google angemeldet bist und der Zugriff schon einmal erlaubt wurde. Zusätzlich holt sie sich während einer laufenden Sitzung selbstständig rechtzeitig vor Ablauf ein neues Token, damit du bei aktiver Nutzung nicht mittendrin rausfliegst.
+Das Zugriffstoken läuft nach ca. 1 Stunde ab. Seit 2026-09-27 meldet sich die App deshalb per **Weiterleitung** statt per Popup an: Beim Öffnen springt die Seite kurz zu Google (`prompt=none`, ohne Oberfläche) und mit frischem Token zurück — ohne Tippen, solange du im Browser bei Google angemeldet bist und schon einmal zugestimmt hast. (Vorher lief das über ein Popup, das Safari ohne Tap blockiert — deshalb musste man sich fast jedes Mal neu anmelden.) Kurz vor Ablauf bzw. beim Zurückkehren nach einer Pause wiederholt sie das automatisch, aber nie, während ein Dialog offen ist, gespeichert oder in ein Feld getippt wird.
 
-**Ehrliche Einschränkung:** Browser blockieren automatisch geöffnete Login-Popups grundsätzlich (Popup-Blocker-Schutz) — das lässt sich bei einer rein clientseitigen App ohne eigenen Server nicht zu 100% umgehen. In der Praxis heißt das: meistens bleibst du eingeloggt, aber gelegentlich (z.B. nach längerer Pause oder je nach Browser/Gerät) siehst du kurz wieder den "Mit Google anmelden"-Button — ein Tap reicht dann aber, da die eigentliche Erlaubnis schon erteilt ist (keine erneute Rechte-Abfrage).
+- Das Token steht nur kurz im URL-Fragment, wird sofort entfernt und **nirgends gespeichert**; ein zufälliger `state`-Wert schützt gegen untergeschobene Antworten. Gespeichert wird nur deine Google-Adresse (`login_hint`, damit es auch mit mehreren Google-Konten ohne Kontoauswahl klappt).
+- Klappt der stille Versuch nicht (bei Google abgemeldet, Cookies gelöscht), erscheint der normale „Mit Google anmelden“-Button; höchstens ein stiller Versuch pro Minute, damit es keine Weiterleitungs-Schleife gibt.
+- Die Home-Bildschirm-App hat auf iOS eigene Cookies, getrennt von Safari: dort musst du dich einmal bei Google anmelden, danach klappt es auch dort still.
 
-Über "Abmelden" (⏻-Icon) wird das absichtlich respektiert: danach versucht die App beim nächsten Öffnen bewusst **nicht** mehr automatisch, dich wieder einzuloggen.
+Über "Abmelden" (⏻-Icon) wird das Token bei Google widerrufen und das absichtlich respektiert: danach versucht die App beim nächsten Öffnen bewusst **nicht** mehr automatisch, dich wieder einzuloggen.
 
 ## Schreibzugriff (seit 2026-09-27)
 

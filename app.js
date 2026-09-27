@@ -90,69 +90,163 @@ function qEscape(name) {
 // ===========================================================================
 
 let accessToken = null;
-let tokenClient = null;
+let tokenAblauf = 0;          // Zeitpunkt (ms), ab dem das Token als abgelaufen gilt
 let erneuerungsTimer = null;
-let autoLoginVersuch = false; // true waehrend eines automatischen (stillen) Login-Versuchs
 let schreibrechte = false;    // hat das aktuelle Token den vollen drive-Scope?
 
+// Login per Weiterleitung statt Popup (seit 2026-09-27): Safari blockiert
+// Popups, die nicht direkt durch einen Tap ausgeloest werden - der stille
+// Login beim App-Start per GIS-Popup scheiterte auf dem iPad deshalb fast
+// immer. Eine Weiterleitung zu Google mit prompt=none wird nie blockiert:
+// Ist man im Browser bei Google angemeldet und hat schon zugestimmt, kommt
+// man nach ~1 s mit frischem Token zurueck, ohne etwas zu tippen. Das Token
+// steht nur im URL-Fragment, wird sofort daraus entfernt und nirgends
+// gespeichert. Die Rueckkehr-Adresse muss in der Google Cloud Console als
+// "Autorisierte Weiterleitungs-URI" eingetragen sein (siehe README).
+const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, "");
+const STILL_SPERRE_MS = 60 * 1000; // hoechstens ein stiller Versuch pro Minute (kein Weiterleitungs-Kreisel)
+
+function zufallsHex(bytes = 16) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function speicher(art) {
+  try { return art === "session" ? sessionStorage : localStorage; } catch (e) { return null; }
+}
+function speicherLesen(art, schluessel) {
+  try { return speicher(art)?.getItem(schluessel) ?? null; } catch (e) { return null; }
+}
+function speicherSchreiben(art, schluessel, wert) {
+  try {
+    if (wert === null) speicher(art)?.removeItem(schluessel);
+    else speicher(art)?.setItem(schluessel, wert);
+  } catch (e) { /* privater Modus o.ae. - dann eben ohne */ }
+}
+
+// Leitet zu Google weiter. still = prompt=none (keine Oberflaeche, Fehler
+// kommt als error=... zurueck); zustimmung = Rechte-Abfrage erzwingen.
+function starteLogin({ still = false, zustimmung = false } = {}) {
+  const state = zufallsHex();
+  speicherSchreiben("session", "oauth_state", state);
+  speicherSchreiben("session", "oauth_still", still ? "1" : "0");
+  if (still) speicherSchreiben("session", "oauth_still_zeit", String(Date.now()));
+  const params = new URLSearchParams({
+    client_id: CONFIG.OAUTH_CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: "token",
+    scope: DRIVE_SCOPE,
+    include_granted_scopes: "true",
+    state,
+  });
+  if (still) params.set("prompt", "none");
+  else if (zustimmung) params.set("prompt", "consent");
+  const konto = speicherLesen("local", "dashboard_konto");
+  if (konto) params.set("login_hint", konto);
+  location.assign(`${GOOGLE_AUTH_URL}?${params.toString()}`);
+}
+
+// Stiller Versuch nur, wenn nicht bewusst abgemeldet und nicht gerade erst
+// einer fehlgeschlagen ist. Gibt true zurueck, wenn weitergeleitet wird.
+function versucheStillenLogin() {
+  if (speicherLesen("local", "dashboard_abgemeldet") === "1") return false;
+  const zuletzt = Number(speicherLesen("session", "oauth_still_zeit") || 0);
+  if (Date.now() - zuletzt < STILL_SPERRE_MS) return false;
+  setStatus("Melde bei Google an …");
+  starteLogin({ still: true });
+  return true;
+}
+
+// Wertet die Rueckkehr von Google aus (#access_token=... bzw. #error=...)
+// und entfernt das Fragment sofort aus der Adresszeile/History.
+function leseLoginAntwort() {
+  const fragment = location.hash.slice(1);
+  if (!/(^|&)(access_token|error)=/.test(fragment)) return null;
+  const p = new URLSearchParams(fragment);
+  history.replaceState(null, "", location.pathname + location.search);
+  const erwartet = speicherLesen("session", "oauth_state");
+  const still = speicherLesen("session", "oauth_still") === "1";
+  speicherSchreiben("session", "oauth_state", null);
+  if (!erwartet || p.get("state") !== erwartet) return { fehler: "state_mismatch", still };
+  if (p.get("error")) return { fehler: p.get("error"), still };
+  return {
+    token: p.get("access_token"),
+    gueltigSekunden: Number(p.get("expires_in")) || 3600,
+    scopes: (p.get("scope") || "").split(/\s+/),
+  };
+}
+
 function initAuth() {
-  if (typeof google === "undefined" || !google.accounts) {
-    // Google-Skript ist noch nicht fertig geladen - kurz erneut versuchen,
-    // statt mit einem ReferenceError abzubrechen.
-    setTimeout(initAuth, 100);
+  const antwort = leseLoginAntwort();
+  if (antwort && antwort.token) {
+    speicherSchreiben("session", "oauth_still_zeit", null);
+    uebernehmeToken(antwort);
     return;
   }
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CONFIG.OAUTH_CLIENT_ID,
-    scope: DRIVE_SCOPE,
-    callback: (resp) => {
-      if (resp.error) {
-        // Beim automatischen Versuch beim App-Start ist ein Fehlschlag normal
-        // (z.B. beim allerersten Aufruf, oder wenn der Zugriff widerrufen
-        // wurde) - dann einfach den normalen Login-Button zeigen, keine
-        // Fehlermeldung. Nur bei einem bewussten Klick zeigen wir den Fehler.
-        if (!autoLoginVersuch) zeigeAnmeldeFehler(resp.error);
-        return;
-      }
-      accessToken = resp.access_token;
-      // Ein Token aus der Nur-Lese-Zeit (drive.readonly) reicht weiter zum
-      // Anzeigen; Schreiben geht erst nach einmaliger neuer Zustimmung
-      // (Hinweis-Banner mit Button, siehe zeigeSchreibrechteHinweis).
-      schreibrechte = google.accounts.oauth2.hasGrantedAllScopes(resp, SCHREIB_SCOPE);
-      zeigeSchreibrechteHinweis(!schreibrechte);
-      planeTokenErneuerung(resp.expires_in);
-      aufAnmeldungReagieren();
-    },
-  });
-
-  // Automatischer, stiller Login-Versuch direkt beim App-Start: Ist der
-  // Nutzer in diesem Browser (bzw. dieser Home-Bildschirm-Verknuepfung)
-  // noch bei Google angemeldet und hat frueher schon zugestimmt, bekommt
-  // die App ohne Tap ein frisches Token - fuehlt sich wie "eingeloggt
-  // bleiben" an, obwohl technisch bei jedem Start ein neues Token geholt wird.
-  // Nach einem bewussten "Abmelden" wird das bewusst uebersprungen, sonst
-  // waere man sofort wieder eingeloggt.
-  if (localStorage.getItem("dashboard_abgemeldet") !== "1") {
-    autoLoginVersuch = true;
-    tokenClient.requestAccessToken({ prompt: "" });
+  if (antwort && antwort.fehler) {
+    // Beim stillen Versuch ist ein Fehlschlag normal (nicht bei Google
+    // angemeldet, mehrere Konten, ...) - dann einfach den Login-Button
+    // zeigen. Nur bei einem bewussten Login die Fehlermeldung.
+    if (!antwort.still && antwort.fehler !== "access_denied") zeigeAnmeldeFehler(antwort.fehler);
+    return;
   }
+  versucheStillenLogin();
 }
 
-// Holt rechtzeitig vor Ablauf (2 Minuten Puffer) im Hintergrund ein neues
-// Token, damit eine laenger offene Seite nicht mitten in der Nutzung auf
-// den Login-Screen zurueckfaellt.
-function planeTokenErneuerung(gueltigSekunden) {
-  clearTimeout(erneuerungsTimer);
-  const wartezeitMs = Math.max((gueltigSekunden || 3600) - 120, 30) * 1000;
-  erneuerungsTimer = setTimeout(() => {
-    autoLoginVersuch = true;
-    tokenClient.requestAccessToken({ prompt: "" });
-  }, wartezeitMs);
+function uebernehmeToken({ token, gueltigSekunden, scopes }) {
+  accessToken = token;
+  tokenAblauf = Date.now() + (gueltigSekunden - 120) * 1000; // 2 Minuten Puffer
+  // Ein Token nur mit drive.readonly reicht weiter zum Anzeigen; Schreiben
+  // geht erst nach einmaliger neuer Zustimmung (Hinweis-Banner mit Button).
+  schreibrechte = scopes.includes(SCHREIB_SCOPE);
+  zeigeSchreibrechteHinweis(!schreibrechte);
+  planeTokenErneuerung();
+  merkeKonto();
+  aufAnmeldungReagieren();
 }
+
+// Merkt sich die Google-Adresse als login_hint, damit der stille Login auch
+// bei mehreren angemeldeten Google-Konten ohne Kontoauswahl klappt.
+async function merkeKonto() {
+  try {
+    const info = await driveFetchJson("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)");
+    if (info.user && info.user.emailAddress) speicherSchreiben("local", "dashboard_konto", info.user.emailAddress);
+  } catch (e) { /* nur Komfort */ }
+}
+
+// Kurz vor Ablauf (nach ~58 Min.) still ein neues Token holen - aber nur,
+// wenn die Seite sichtbar ist und gerade nichts gespeichert oder eingegeben
+// wird. Sonst passiert das beim naechsten Zurueckkehren bzw. Drive-Aufruf.
+function planeTokenErneuerung() {
+  clearTimeout(erneuerungsTimer);
+  erneuerungsTimer = setTimeout(erneuereFallsNoetig, Math.max(tokenAblauf - Date.now(), 30 * 1000));
+}
+
+function nutzerIstBeschaeftigt() {
+  const aktiv = document.activeElement;
+  return schreibVorgangLaeuft
+    || document.getElementById("bestaetigen-dialog").open
+    || (aktiv && ["INPUT", "SELECT", "TEXTAREA"].includes(aktiv.tagName) && aktiv.type !== "checkbox");
+}
+
+function erneuereFallsNoetig() {
+  if (!accessToken || Date.now() < tokenAblauf) return;
+  if (document.visibilityState !== "visible" || nutzerIstBeschaeftigt()) {
+    erneuerungsTimer = setTimeout(erneuereFallsNoetig, 60 * 1000);
+    return;
+  }
+  versucheStillenLogin();
+}
+
+// Nach laengerer Pause (Handy im Standby, Tab im Hintergrund) beim
+// Zurueckkehren sofort pruefen statt auf den Timer zu warten.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") erneuereFallsNoetig();
+});
 
 function zeigeAnmeldeFehler(fehler) {
   const el = document.getElementById("anmelde-fehler");
-  el.textContent = `Anmeldung fehlgeschlagen: ${fehler}. Pruefe config.js (Client-ID) und die erlaubten Origins in der Google Cloud Console.`;
+  el.textContent = `Anmeldung fehlgeschlagen: ${fehler}. Pruefe config.js (Client-ID) und in der Google Cloud Console die autorisierte Weiterleitungs-URI ${REDIRECT_URI}.`;
   el.hidden = false;
 }
 
@@ -167,11 +261,11 @@ class SchreibrechteFehler extends Error {
 // Gemeinsame Fehlerbehandlung fuer alle Drive-Aufrufe (lesend und schreibend).
 async function driveAntwortPruefen(resp) {
   if (resp.status === 401) {
-    // Token abgelaufen (z.B. Handy war laenger im Standby) - der geplante
-    // Refresh-Timer greift hier nicht mehr, also Login-Screen zeigen.
+    // Token abgelaufen (z.B. Handy war laenger im Standby): still neu
+    // anmelden; klappt das nicht (gerade erst versucht), Login-Screen.
     clearTimeout(erneuerungsTimer);
     accessToken = null;
-    zeigeAnmeldeAnsicht();
+    if (!versucheStillenLogin()) zeigeAnmeldeAnsicht();
     throw new Error("Sitzung abgelaufen, bitte erneut anmelden.");
   }
   if (resp.ok) return resp;
@@ -2357,10 +2451,7 @@ function initSchreibAktionen() {
   });
 
   document.getElementById("meldung").addEventListener("click", (e) => { e.currentTarget.hidden = true; });
-  document.getElementById("schreibrechte-btn").addEventListener("click", () => {
-    autoLoginVersuch = false;
-    tokenClient.requestAccessToken({ prompt: "consent" });
-  });
+  document.getElementById("schreibrechte-btn").addEventListener("click", () => starteLogin({ zustimmung: true }));
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -2370,9 +2461,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("anmelden-btn").addEventListener("click", () => {
     document.getElementById("anmelde-fehler").hidden = true;
-    localStorage.removeItem("dashboard_abgemeldet");
-    autoLoginVersuch = false;
-    tokenClient.requestAccessToken();
+    speicherSchreiben("local", "dashboard_abgemeldet", null);
+    starteLogin();
   });
 
   document.getElementById("aktualisieren-btn").addEventListener("click", () => {
@@ -2383,9 +2473,17 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   document.getElementById("abmelden-btn").addEventListener("click", () => {
-    if (accessToken) google.accounts.oauth2.revoke(accessToken, () => {});
+    // Token bei Google widerrufen (entzieht auch die erteilte Zustimmung)
+    if (accessToken) {
+      fetch("https://oauth2.googleapis.com/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ token: accessToken }),
+      }).catch(() => {});
+    }
     clearTimeout(erneuerungsTimer);
-    localStorage.setItem("dashboard_abgemeldet", "1");
+    speicherSchreiben("local", "dashboard_abgemeldet", "1");
+    speicherSchreiben("local", "dashboard_konto", null);
     accessToken = null;
     appDaten = null;
     zeigeAnmeldeAnsicht();
