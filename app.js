@@ -26,8 +26,13 @@ const BEGLEITER_MAX_UPDATES = 5;    // so viele letzte Updates pro Fach anzeigen
 // Begleiter-Infos, veraltete Daten); sie ist nur noch Fallback.
 const VAULT_FOLDER_ID = "1GOFBNm2FztTj5XjNf8dTssn2Ai-F8z1X";
 
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+// Scope, den ein Token haben muss, damit die Schreibfunktionen freigeschaltet
+// werden. Solange DRIVE_SCOPE oben nur drive.readonly anfragt, bleibt die App
+// lesend und zeigt den Schreibrechte-Hinweis (siehe README).
+const SCHREIB_SCOPE = "https://www.googleapis.com/auth/drive";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
 
 // ===========================================================================
 // KLEINE HELFER
@@ -81,13 +86,14 @@ function qEscape(name) {
 }
 
 // ===========================================================================
-// GOOGLE DRIVE ZUGRIFF (nur lesend - GET, nie POST/PATCH/DELETE)
+// GOOGLE DRIVE ZUGRIFF (Lesen; Schreiben nur ueber schreibeDatei/erstelleDatei)
 // ===========================================================================
 
 let accessToken = null;
 let tokenClient = null;
 let erneuerungsTimer = null;
 let autoLoginVersuch = false; // true waehrend eines automatischen (stillen) Login-Versuchs
+let schreibrechte = false;    // hat das aktuelle Token den vollen drive-Scope?
 
 function initAuth() {
   if (typeof google === "undefined" || !google.accounts) {
@@ -109,6 +115,11 @@ function initAuth() {
         return;
       }
       accessToken = resp.access_token;
+      // Ein Token aus der Nur-Lese-Zeit (drive.readonly) reicht weiter zum
+      // Anzeigen; Schreiben geht erst nach einmaliger neuer Zustimmung
+      // (Hinweis-Banner mit Button, siehe zeigeSchreibrechteHinweis).
+      schreibrechte = google.accounts.oauth2.hasGrantedAllScopes(resp, SCHREIB_SCOPE);
+      zeigeSchreibrechteHinweis(!schreibrechte);
       planeTokenErneuerung(resp.expires_in);
       aufAnmeldungReagieren();
     },
@@ -145,8 +156,16 @@ function zeigeAnmeldeFehler(fehler) {
   el.hidden = false;
 }
 
-async function driveFetchJson(url) {
-  const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+// Fehler "Token hat keine Schreibrechte" (403 insufficientPermissions bzw.
+// ACCESS_TOKEN_SCOPE_INSUFFICIENT) - fuehrt zum Neu-Anmelden-Hinweis.
+class SchreibrechteFehler extends Error {
+  constructor() {
+    super("Bitte einmal neu anmelden, um Schreibrechte zu erteilen.");
+  }
+}
+
+// Gemeinsame Fehlerbehandlung fuer alle Drive-Aufrufe (lesend und schreibend).
+async function driveAntwortPruefen(resp) {
   if (resp.status === 401) {
     // Token abgelaufen (z.B. Handy war laenger im Standby) - der geplante
     // Refresh-Timer greift hier nicht mehr, also Login-Screen zeigen.
@@ -155,8 +174,39 @@ async function driveFetchJson(url) {
     zeigeAnmeldeAnsicht();
     throw new Error("Sitzung abgelaufen, bitte erneut anmelden.");
   }
-  if (!resp.ok) throw new Error(`Drive-API-Fehler ${resp.status}: ${await resp.text()}`);
+  if (resp.ok) return resp;
+  const text = await resp.text();
+  if (resp.status === 403 && /insufficientPermissions|ACCESS_TOKEN_SCOPE_INSUFFICIENT|insufficient authentication scopes/i.test(text)) {
+    schreibrechte = false;
+    zeigeSchreibrechteHinweis(true);
+    throw new SchreibrechteFehler();
+  }
+  throw new Error(`Drive-API-Fehler ${resp.status}: ${text}`);
+}
+
+async function driveFetchJson(url, optionen = {}) {
+  const resp = await fetch(url, {
+    ...optionen,
+    headers: { ...(optionen.headers || {}), Authorization: `Bearer ${accessToken}` },
+  });
+  await driveAntwortPruefen(resp);
   return resp.json();
+}
+
+// ---------------------------------------------------------------------------
+// Vault-Register: Nur Dateien/Ordner, die beim Laden aus dem Vault-Ordner
+// (VAULT_FOLDER_ID und Unterordner) kamen, duerfen beschrieben bzw. als
+// Ziel fuer neue Dateien genutzt werden. rev = headRevisionId zum Zeitpunkt
+// des Ladens (Konfliktschutz: hat sich die Datei seitdem geaendert, wird
+// nicht geschrieben).
+// ---------------------------------------------------------------------------
+const vaultOrdner = new Set();
+const vaultDateien = new Map(); // id -> { name, rev }
+
+function registriereVaultEintrag(eintrag, parentId) {
+  if (!eintrag || !vaultOrdner.has(parentId)) return;
+  if (eintrag.mimeType === FOLDER_MIME) vaultOrdner.add(eintrag.id);
+  else vaultDateien.set(eintrag.id, { name: eintrag.name, rev: eintrag.headRevisionId || eintrag.modifiedTime || null });
 }
 
 async function driveListChildren(parentId, extraQuery = "") {
@@ -166,7 +216,7 @@ async function driveListChildren(parentId, extraQuery = "") {
   do {
     const params = new URLSearchParams({
       q,
-      fields: "nextPageToken, files(id, name, mimeType)",
+      fields: "nextPageToken, files(id, name, mimeType, headRevisionId, modifiedTime)",
       pageSize: "1000",
     });
     if (pageToken) params.set("pageToken", pageToken);
@@ -174,27 +224,36 @@ async function driveListChildren(parentId, extraQuery = "") {
     ergebnis = ergebnis.concat(data.files || []);
     pageToken = data.nextPageToken || null;
   } while (pageToken);
+  ergebnis.forEach((e) => registriereVaultEintrag(e, parentId));
   return ergebnis;
 }
 
-async function driveFindFolderByName(name, parentId) {
+// Wie driveFindFolderByName, gibt aber null statt eines Fehlers zurueck.
+async function driveSucheOrdner(name, parentId) {
   const parentClause = parentId ? ` and '${parentId}' in parents` : "";
-  const q = `name='${qEscape(name)}' and mimeType='application/vnd.google-apps.folder' and trashed=false${parentClause}`;
-  const params = new URLSearchParams({ q, fields: "files(id, name)", pageSize: "5" });
+  const q = `name='${qEscape(name)}' and mimeType='${FOLDER_MIME}' and trashed=false${parentClause}`;
+  const params = new URLSearchParams({ q, fields: "files(id, name, mimeType)", pageSize: "5" });
   const data = await driveFetchJson(`${DRIVE_API}?${params.toString()}`);
-  if (!data.files || data.files.length === 0) {
-    throw new Error(`Ordner '${name}' nicht gefunden (in Drive-Ordner ${parentId ?? "root"}).`);
-  }
-  return data.files[0];
+  const ordner = data.files && data.files.length ? data.files[0] : null;
+  if (ordner && parentId) registriereVaultEintrag(ordner, parentId);
+  return ordner;
+}
+
+async function driveFindFolderByName(name, parentId) {
+  const ordner = await driveSucheOrdner(name, parentId);
+  if (!ordner) throw new Error(`Ordner '${name}' nicht gefunden (in Drive-Ordner ${parentId ?? "root"}).`);
+  return ordner;
 }
 
 // Sucht eine (Nicht-Ordner-)Datei per Name in einem Ordner. Gibt null
 // zurueck statt zu werfen, wenn es sie (noch) nicht gibt.
 async function driveFindFileByName(name, parentId) {
   const q = `name='${qEscape(name)}' and '${parentId}' in parents and mimeType!='${FOLDER_MIME}' and trashed=false`;
-  const params = new URLSearchParams({ q, fields: "files(id, name)", pageSize: "5" });
+  const params = new URLSearchParams({ q, fields: "files(id, name, mimeType, headRevisionId, modifiedTime)", pageSize: "5" });
   const data = await driveFetchJson(`${DRIVE_API}?${params.toString()}`);
-  return data.files && data.files.length ? data.files[0] : null;
+  const datei = data.files && data.files.length ? data.files[0] : null;
+  if (datei) registriereVaultEintrag(datei, parentId);
+  return datei;
 }
 
 async function driveGetFileContent(fileId) {
@@ -400,7 +459,9 @@ async function ladeAufgaben(aufgabenOrdnerId, heute) {
   const inhalte = await Promise.all(dateien.map((d) => driveGetFileContent(d.id)));
   let alleAufgaben = [];
   inhalte.forEach((text, i) => {
-    alleAufgaben = alleAufgaben.concat(parseAufgabenDatei(text, dateien[i].name));
+    const aufgaben = parseAufgabenDatei(text, dateien[i].name);
+    aufgaben.forEach((a) => { a.dateiId = dateien[i].id; });
+    alleAufgaben = alleAufgaben.concat(aufgaben);
   });
   return alleAufgaben;
 }
@@ -527,7 +588,10 @@ async function ladeKlausuren(klausurenOrdnerId) {
   inhalte.forEach((text, i) => {
     const titel = dateien[i].name.replace(/\.md$/i, "");
     const klausur = parseKlausurDatei(text, titel, dateien[i].parentName);
-    if (klausur) klausuren.push(klausur);
+    if (klausur) {
+      klausur.dateiId = dateien[i].id;
+      klausuren.push(klausur);
+    }
   });
   return klausuren;
 }
@@ -572,11 +636,14 @@ function leseNotenAusText(text) {
     const ergebnis = [];
     for (const eintrag of roh) {
       if (typeof eintrag !== "object" || eintrag === null) continue;
+      // id nur als echter String (js-yaml liest z.B. 12e45678 unquoted als
+      // Zahl) - ohne gueltige id wie am Desktop nicht bearbeitbar.
+      const id = typeof eintrag.id === "string" ? eintrag.id.trim() : "";
       const bezeichnung = String(eintrag.bezeichnung || "").trim();
       const punkte = Number(eintrag.punkte);
       const datumRoh = eintrag.datum instanceof Date ? eintrag.datum.toISOString().slice(0, 10) : String(eintrag.datum ?? "").trim();
       const datum = /^\d{4}-\d{2}-\d{2}$/.test(datumRoh) ? datumRoh : null;
-      if (bezeichnung && Number.isFinite(punkte)) ergebnis.push({ bezeichnung, punkte, datum });
+      if (bezeichnung && Number.isFinite(punkte)) ergebnis.push({ id, bezeichnung, punkte, datum });
     }
     return ergebnis;
   };
@@ -592,7 +659,7 @@ async function ladeNotenProFach(notenOrdnerId) {
   const inhalte = await Promise.all(dateien.map((d) => driveGetFileContent(d.id)));
   const notenProFach = {};
   inhalte.forEach((text, i) => {
-    notenProFach[dateien[i].parentName] = leseNotenAusText(text);
+    notenProFach[dateien[i].parentName] = { ...leseNotenAusText(text), dateiId: dateien[i].id };
   });
   return notenProFach;
 }
@@ -723,6 +790,7 @@ function begleiterSeitenUrl(url, seite) {
 }
 
 let appDaten = null; // zuletzt geladener Zustand, fuer Klick-Handler der Detailansicht
+let ordnerIds = null; // Drive-IDs der Vault-Ordner (vault, aufgaben, schule, klausuren, noten)
 
 // Primaer die feste Ordner-ID. Nur wenn die nicht erreichbar ist (geloescht,
 // im Papierkorb, keine Rechte): Namenssuche, bei mehreren Treffern der
@@ -732,6 +800,7 @@ async function findeVaultOrdner() {
     const params = new URLSearchParams({ fields: "id, name, mimeType, trashed" });
     const ordner = await driveFetchJson(`${DRIVE_API}/${VAULT_FOLDER_ID}?${params.toString()}`);
     if (ordner && ordner.mimeType === FOLDER_MIME && !ordner.trashed) {
+      vaultOrdner.add(ordner.id);
       return { id: ordner.id, hinweis: null };
     }
   } catch (e) {
@@ -754,6 +823,7 @@ async function findeVaultOrdner() {
   if (treffer.length > 1) {
     hinweis = `Mehrere Vault-Ordner gefunden (${treffer.length}× „${CONFIG.VAULT_ORDNER_NAME}“) – verwende den zuletzt geänderten (ID ${treffer[0].id}). ` + hinweis;
   }
+  vaultOrdner.add(treffer[0].id);
   return { id: treffer[0].id, hinweis };
 }
 
@@ -772,6 +842,7 @@ async function ladeAlleDaten() {
     driveFindFolderByName("Noten", schuleOrdner.id),
   ]);
 
+  ordnerIds = { vault: vaultId, aufgaben: aufgabenOrdner.id, schule: schuleOrdner.id, klausuren: klausurenOrdner.id, noten: notenOrdner.id };
   const heute = dateOnly(new Date());
 
   setStatus("Lade Aufgaben, Klausuren, Punkte & Begleiter ...");
@@ -791,6 +862,7 @@ async function ladeAlleDaten() {
 
   setStatus(`Zuletzt aktualisiert: ${new Date().toLocaleTimeString("de-DE")}`);
   renderAlles();
+  aktualisiereOffeneDetailansicht();
 }
 
 function baueAppDaten({ heute, aufgaben, klausurenRoh, notenProFach, faecherListe, begleiter }) {
@@ -905,6 +977,661 @@ function berechneKpis({ aufgaben, klausurenAnstehend, faecherListe, notenProFach
 }
 
 // ===========================================================================
+// SCHREIBEN (seit 2026-09-27) - alle Schreibvorgaenge laufen ueber
+// schreibeDatei() bzw. erstelleDatei(). Die Text-Aenderungen sind Ports der
+// Desktop-Funktionen in dashboard.py und erzeugen dieselben Dateiaenderungen,
+// lassen aber Zeilenenden (CRLF/LF) und ein BOM der Originaldatei unberuehrt.
+// ===========================================================================
+
+// Abbruch ohne Schreiben (Zielzeile nicht gefunden, ungueltige Eingabe, ...)
+class SchreibAbbruch extends Error {}
+// Datei wurde zwischen Laden und Schreiben woanders geaendert
+class SchreibKonflikt extends Error {
+  constructor() {
+    super("Datei wurde gerade woanders geändert – Daten neu geladen, bitte nochmal versuchen.");
+  }
+}
+
+const BOM = "﻿";
+const reEscape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function erkenneZeilenende(text) {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+// Liest den Inhalt als Text, der Byte fuer Byte zurueckgeschrieben werden
+// kann: ein BOM bleibt als "﻿" erhalten (resp.text() wuerde es still
+// entfernen), ungueltiges UTF-8 bricht ab statt Zeichen zu verfaelschen.
+async function driveLeseRohtext(fileId) {
+  const resp = await fetch(`${DRIVE_API}/${fileId}?alt=media`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  await driveAntwortPruefen(resp);
+  const bytes = await resp.arrayBuffer();
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch (e) {
+    throw new SchreibAbbruch("Datei ist kein gültiges UTF-8 – nicht geändert.");
+  }
+}
+
+async function driveMetadaten(fileId) {
+  const params = new URLSearchParams({ fields: "id, name, headRevisionId, modifiedTime, trashed" });
+  return driveFetchJson(`${DRIVE_API}/${fileId}?${params.toString()}`);
+}
+
+const revisionVon = (meta) => meta.headRevisionId || meta.modifiedTime || null;
+
+function pruefeVaultDatei(fileId) {
+  if (!fileId || !vaultDateien.has(fileId)) {
+    throw new SchreibAbbruch("Sicherheitsstopp: Datei stammt nicht aus dem Vault-Ordner – nichts geschrieben.");
+  }
+}
+
+function pruefeVaultOrdner(ordnerId) {
+  if (!ordnerId || !vaultOrdner.has(ordnerId)) {
+    throw new SchreibAbbruch("Sicherheitsstopp: Zielordner liegt nicht im Vault – nichts angelegt.");
+  }
+}
+
+// Zentrale Schreibfunktion fuer bestehende Dateien:
+// 1. Metadaten + Inhalt frisch laden (nie auf dem Stand vom letzten Rendern aendern)
+// 2. aendere(text) -> neuerText anwenden (wirft SchreibAbbruch, wenn das Ziel fehlt)
+// 3. unmittelbar vor dem Hochladen headRevisionId erneut pruefen
+// 4. per PATCH (uploadType=media) als UTF-8 hochladen
+// Aendert sich die Datei zwischen Laden (Rendern) und Schreiben, wird nicht
+// geschrieben (SchreibKonflikt). Gibt true zurueck, wenn geschrieben wurde.
+async function schreibeDatei(fileId, aendere) {
+  pruefeVaultDatei(fileId);
+
+  const meta = await driveMetadaten(fileId);
+  if (meta.trashed) throw new SchreibAbbruch("Datei liegt im Papierkorb – nichts geschrieben.");
+  const bekannt = vaultDateien.get(fileId).rev;
+  if (bekannt && revisionVon(meta) !== bekannt) throw new SchreibKonflikt();
+
+  const text = await driveLeseRohtext(fileId);
+  const neuerText = aendere(text);
+  if (typeof neuerText !== "string") throw new SchreibAbbruch("Interner Fehler: keine Änderung berechnet.");
+  if (neuerText === text) return false;
+
+  const metaDavor = await driveMetadaten(fileId);
+  if (revisionVon(metaDavor) !== revisionVon(meta)) throw new SchreibKonflikt();
+
+  const params = new URLSearchParams({ uploadType: "media", fields: "id, headRevisionId, modifiedTime" });
+  const neu = await driveFetchJson(`${DRIVE_UPLOAD_API}/${fileId}?${params.toString()}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "text/markdown; charset=UTF-8" },
+    body: new TextEncoder().encode(neuerText),
+  });
+  vaultDateien.set(fileId, { name: vaultDateien.get(fileId).name, rev: revisionVon(neu) });
+  return true;
+}
+
+// Legt eine neue Datei in einem Vault-Ordner an (multipart-Upload). Bricht
+// ab, wenn dort schon eine Datei gleichen Namens liegt.
+async function erstelleDatei(ordnerId, name, text) {
+  pruefeVaultOrdner(ordnerId);
+  if (await driveFindFileByName(name, ordnerId)) {
+    throw new SchreibKonflikt();
+  }
+  const grenze = "grenze" + Math.random().toString(16).slice(2);
+  const metadaten = JSON.stringify({ name, parents: [ordnerId], mimeType: "text/markdown" });
+  const koerper = new Blob([
+    `--${grenze}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadaten}\r\n`,
+    `--${grenze}\r\nContent-Type: text/markdown; charset=UTF-8\r\n\r\n`,
+    new TextEncoder().encode(text),
+    `\r\n--${grenze}--`,
+  ]);
+  const params = new URLSearchParams({ uploadType: "multipart", fields: "id, name, mimeType, headRevisionId, modifiedTime" });
+  const datei = await driveFetchJson(`${DRIVE_UPLOAD_API}?${params.toString()}`, {
+    method: "POST",
+    headers: { "Content-Type": `multipart/related; boundary=${grenze}` },
+    body: koerper,
+  });
+  registriereVaultEintrag(datei, ordnerId);
+  return datei;
+}
+
+// Findet oder erstellt einen Unterordner (z.B. Schule/Noten/[Fach]).
+async function stelleOrdnerSicher(parentId, name) {
+  pruefeVaultOrdner(parentId);
+  const vorhanden = await driveSucheOrdner(name, parentId);
+  if (vorhanden) return vorhanden.id;
+  const ordner = await driveFetchJson(`${DRIVE_API}?fields=id,name,mimeType`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=UTF-8" },
+    body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
+  });
+  registriereVaultEintrag(ordner, parentId);
+  return ordner.id;
+}
+
+// Loest einen Vault-relativen Pfad (wie in einem Wikilink) auf eine Datei-ID
+// auf - Pendant zu VAULT_PATH / f"{link}.md" in finde_verlinkte_notiz().
+async function findeVaultDateiPerPfad(relPfad) {
+  const teile = relPfad.split("/").map((t) => t.trim()).filter(Boolean);
+  if (!teile.length || teile.includes("..")) return null;
+  let ordnerId = ordnerIds.vault;
+  for (const teil of teile.slice(0, -1)) {
+    const ordner = await driveSucheOrdner(teil, ordnerId);
+    if (!ordner) return null;
+    ordnerId = ordner.id;
+  }
+  const datei = await driveFindFileByName(`${teile[teile.length - 1]}.md`, ordnerId);
+  return datei ? datei.id : null;
+}
+
+// --- Text-Aenderungen (Ports aus dashboard.py) ----------------------------
+
+// Trennt ein evtl. BOM ab, wendet fn auf den Rest an und setzt es wieder davor.
+function mitBom(text, fn) {
+  const hatBom = text.startsWith(BOM);
+  const ergebnis = fn(hatBom ? text.slice(1) : text);
+  return hatBom ? BOM + ergebnis : ergebnis;
+}
+
+// Frontmatter-Grenzen wie FRONTMATTER_MUSTER in dashboard.py: '---' am
+// Dateianfang, schliessendes '---' allein auf einer Zeile. Gibt
+// { start, ende } des Frontmatter-Inhalts (inkl. letztem Zeilenumbruch)
+// zurueck, oder null.
+function findeFrontmatter(text) {
+  const kopf = /^---[ \t]*\r?\n/.exec(text);
+  if (!kopf) return null;
+  const schluss = /^---[ \t]*\r?$/gm;
+  schluss.lastIndex = kopf[0].length;
+  const treffer = schluss.exec(text);
+  if (!treffer) return null;
+  return { start: kopf[0].length, ende: treffer.index, schlussZeile: treffer[0] };
+}
+
+// Port von setze_frontmatter_feld(): ersetzt GENAU EIN Top-Level-Feld
+// zeilenbasiert (samt eingerueckter Folgezeilen) oder haengt es am Ende des
+// Frontmatters an. Alles andere bleibt Byte fuer Byte gleich.
+function setzeFrontmatterFeld(text, feld, wertYaml) {
+  return mitBom(text, (t) => {
+    const fm = findeFrontmatter(t);
+    if (!fm) throw new SchreibAbbruch("Kein Frontmatter gefunden – nichts geändert.");
+    const roh = t.slice(fm.start, fm.ende);
+    const zeilenende = erkenneZeilenende(roh);
+    const neueZeile = `${feld}: ${wertYaml}`;
+    const feldMuster = new RegExp(`^${reEscape(feld)}:[^\\r\\n]*(?:\\r?\\n[ \\t]+[^\\r\\n]*)*`, "m");
+    let neu;
+    if (feldMuster.test(roh)) {
+      neu = roh.replace(feldMuster, () => neueZeile);
+    } else {
+      neu = roh;
+      if (neu && !neu.endsWith("\n")) neu += zeilenende;
+      neu += neueZeile + zeilenende;
+    }
+    return t.slice(0, fm.start) + neu + t.slice(fm.ende);
+  });
+}
+
+// Findet den Block einer Aufgabe ('## Titel' bis zur naechsten '## '-
+// Ueberschrift) - wie das Muster in markiere_aufgabe_status().
+function findeAufgabenBlock(text, titel) {
+  const muster = new RegExp(`(^##[ \\t]+${reEscape(titel)}[ \\t]*\\r?\\n)([\\s\\S]*?)(?=^##[ \\t]+|(?![\\s\\S]))`, "m");
+  const treffer = muster.exec(text);
+  if (!treffer) return null;
+  const start = treffer.index + treffer[1].length;
+  return { start, ende: start + treffer[2].length, block: treffer[2] };
+}
+
+// Port von markiere_aufgabe_status() (ohne die Detail-Notiz): aendert nur
+// die Status-Zeile im Block der Aufgabe.
+function setzeAufgabeStatusImText(text, titel, neuerStatus) {
+  return mitBom(text, (t) => {
+    const b = findeAufgabenBlock(t, titel);
+    if (!b) throw new SchreibAbbruch(`Aufgabe „${titel}“ nicht in der Datei gefunden – nichts geändert. Bitte neu laden.`);
+    const statusMuster = /(\*\*Status:\*\*)[ \t]*[^\r\n]*/;
+    let neuerBlock;
+    if (statusMuster.test(b.block)) {
+      neuerBlock = b.block.replace(statusMuster, (_, feld) => `${feld} ${neuerStatus}`);
+    } else {
+      const zeilenende = erkenneZeilenende(t);
+      neuerBlock = b.block.replace(/(\r?\n)+$/, "") + `${zeilenende}- **Status:** ${neuerStatus}${zeilenende}`;
+    }
+    return t.slice(0, b.start) + neuerBlock + t.slice(b.ende);
+  });
+}
+
+// Port von markiere_status_in_freitext() fuer verlinkte Detail-Notizen.
+// Gibt null zurueck, wenn die Notiz kein '**Status:**'-Feld hat (dann wie am
+// Desktop einfach nichts tun).
+function setzeFreitextStatus(text, neuerStatusText) {
+  const muster = /^([ \t]*-?[ \t]*\*\*Status:\*\*)[ \t]*[^\r\n]*/m;
+  if (!muster.test(text)) return null;
+  return text.replace(muster, (_, feld) => `${feld} ${neuerStatusText}`);
+}
+
+const WIKILINK_MUSTER = /\[\[([^\]|]+)(?:\|[^\]]*)?\]\]/;
+function verlinkterPfad(beschreibung) {
+  const treffer = WIKILINK_MUSTER.exec(beschreibung || "");
+  return treffer ? treffer[1].trim() : null;
+}
+
+// --- Noten.md: Frontmatter wie am Desktop per YAML neu erzeugen ------------
+// dashboard.py (schreibe_frontmatter) laedt das Frontmatter mit
+// yaml.safe_load und schreibt es mit yaml.safe_dump(allow_unicode=True,
+// sort_keys=False) neu. js-yaml (fest 4.1.0) mit noArrayIndent und ohne
+// Zeilenumbruch erzeugt dieselbe Schreibweise; Datumswerte (unquoted
+// JJJJ-MM-TT) werden wie bei PyYAML wieder unquoted geschrieben.
+
+function yamlWieDesktop(daten) {
+  const platzhalter = [];
+  const ersetzeDaten = (wert) => {
+    if (wert instanceof Date) {
+      const iso = wert.toISOString();
+      const text = iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso.slice(0, 19).replace("T", " ");
+      platzhalter.push(text);
+      return `__DATUM_${platzhalter.length - 1}__`;
+    }
+    if (Array.isArray(wert)) return wert.map(ersetzeDaten);
+    if (wert && typeof wert === "object") return Object.fromEntries(Object.entries(wert).map(([k, v]) => [k, ersetzeDaten(v)]));
+    return wert;
+  };
+  const yaml = jsyaml.dump(ersetzeDaten(daten), { noArrayIndent: true, lineWidth: -1, sortKeys: false });
+  return yaml.replace(/__DATUM_(\d+)__/g, (_, i) => platzhalter[Number(i)]);
+}
+
+// Port von schreibe_frontmatter(): aktualisiere(fm) gibt das neue Dict oder
+// null (nichts zu tun -> SchreibAbbruch) zurueck. Der Body bleibt unberuehrt,
+// das neue YAML bekommt das Zeilenende des bisherigen Frontmatters.
+function ersetzeFrontmatterPerYaml(text, aktualisiere) {
+  return mitBom(text, (t) => {
+    const fm = findeFrontmatter(t);
+    if (!fm) throw new SchreibAbbruch("Kein Frontmatter in der Noten-Datei gefunden – nichts geändert.");
+    const roh = t.slice(fm.start, fm.ende);
+    let daten;
+    try {
+      daten = jsyaml.load(roh) || {};
+    } catch (e) {
+      throw new SchreibAbbruch("Frontmatter der Noten-Datei ist fehlerhaft – nichts geändert.");
+    }
+    if (typeof daten !== "object" || Array.isArray(daten)) throw new SchreibAbbruch("Frontmatter der Noten-Datei ist fehlerhaft – nichts geändert.");
+    const neu = aktualisiere(daten);
+    if (!neu) throw new SchreibAbbruch("Eintrag nicht gefunden – nichts geändert. Bitte neu laden.");
+    const zeilenende = erkenneZeilenende(roh);
+    const yaml = yamlWieDesktop(neu).replace(/\n/g, zeilenende);
+    const kopf = t.slice(0, fm.start);
+    return kopf + yaml + t.slice(fm.ende);
+  });
+}
+
+const notenFeldname = (art) => (art === "schriftlich" ? "schriftliche_noten" : "muendliche_noten");
+
+function neueNotenId() {
+  // 8 Hex-Zeichen wie uuid4().hex[:8]; IDs, die YAML als Zahl lesen wuerde
+  // (z.B. 12e45678), werden verworfen, damit sie bearbeitbar bleiben.
+  for (;;) {
+    const bytes = crypto.getRandomValues(new Uint8Array(4));
+    const id = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    if (typeof jsyaml.load(id) === "string") return id;
+  }
+}
+
+// Inhalt einer neuen Noten.md exakt wie fuege_note_hinzu() sie anlegt
+// (Desktop schreibt unter Windows CRLF).
+function neueNotenDateiText(fach) {
+  return [
+    "---",
+    `fach: "${fach}"`,
+    "schriftliche_noten: []",
+    "muendliche_noten: []",
+    "---",
+    "",
+    `# Noten – ${fach}`,
+    "",
+    "Automatisch verwaltet vom Dashboard-Punkte-Tab. Siehe [[Dashboard-System]].",
+    "",
+  ].join("\r\n");
+}
+
+// --- Neue Aufgabe -----------------------------------------------------------
+
+// Kopf einer neuen Monatsdatei - wie die bestehenden Aufgaben-JJJJ-MM.md.
+function neueAufgabenDateiText(jahr, monat) {
+  return [
+    "---",
+    `monat: ${jahr}-${String(monat).padStart(2, "0")}`,
+    "tags:",
+    "  - aufgabe",
+    "---",
+    "",
+    `# Aufgaben ${MONATE[monat - 1]} ${jahr}`,
+    "",
+    "Verknüpfung mit fachspezifischen Details: [[Schule/Klausur-System]]",
+    "",
+  ].join("\r\n");
+}
+
+function haengeAufgabeAn(text, { fach, titel, deadline, prioritaet, beschreibung }) {
+  return mitBom(text, (t) => {
+    const ueberschrift = `${fach}: ${titel}`;
+    if (findeAufgabenBlock(t, ueberschrift)) {
+      throw new SchreibAbbruch(`„${ueberschrift}“ gibt es in dieser Monatsdatei schon – bitte anderen Titel wählen.`);
+    }
+    const zeilenende = t ? erkenneZeilenende(t) : "\r\n";
+    const zeilen = [
+      `## ${ueberschrift}`,
+      `- **Fach:** ${fach}`,
+      `- **Deadline:** ${deadline}`,
+      `- **Priorität:** ${prioritaet}`,
+      "- **Status:** nicht-gestartet",
+    ];
+    if (beschreibung) zeilen.push(`- **Beschreibung:** ${beschreibung}`);
+    let davor = t;
+    if (davor && !davor.endsWith("\n")) davor += zeilenende;
+    if (davor && !davor.endsWith(zeilenende + zeilenende)) davor += zeilenende;
+    return davor + zeilen.join(zeilenende) + zeilenende;
+  });
+}
+
+// ===========================================================================
+// BESTAETIGUNGSDIALOG + MELDUNGEN
+// ===========================================================================
+
+// Eigenes Modal (natives <dialog>), kein window.confirm. Fokus startet auf
+// "Abbrechen"; Esc und Tippen ausserhalb = Abbrechen. Resolved true/false.
+function bestaetige({ titel, text, hinweis = "", aktion = "Speichern", gefahr = false }) {
+  const dialog = document.getElementById("bestaetigen-dialog");
+  document.getElementById("bestaetigen-titel").textContent = titel;
+  document.getElementById("bestaetigen-text").textContent = text;
+  const hinweisEl = document.getElementById("bestaetigen-hinweis");
+  hinweisEl.textContent = hinweis;
+  hinweisEl.hidden = !hinweis;
+  const ok = document.getElementById("bestaetigen-ok");
+  ok.className = gefahr ? "btn btn-sekundaer btn-gefahr" : "btn btn-primaer";
+  ok.innerHTML = gefahr ? `${icon("muell", 16)} ${esc(aktion)}` : esc(aktion);
+  const abbrechen = document.getElementById("bestaetigen-abbrechen");
+
+  return new Promise((resolve) => {
+    const ende = (ergebnis) => {
+      ok.removeEventListener("click", beiOk);
+      abbrechen.removeEventListener("click", beiAbbrechen);
+      dialog.removeEventListener("cancel", beiAbbrechen);
+      dialog.removeEventListener("click", beiKlick);
+      if (dialog.open) dialog.close();
+      resolve(ergebnis);
+    };
+    const beiOk = () => ende(true);
+    const beiAbbrechen = (e) => { if (e) e.preventDefault(); ende(false); };
+    // Klick auf den Hintergrund (das <dialog> selbst, nicht sein Inhalt)
+    const beiKlick = (e) => { if (e.target === dialog) ende(false); };
+    ok.addEventListener("click", beiOk);
+    abbrechen.addEventListener("click", beiAbbrechen);
+    dialog.addEventListener("cancel", beiAbbrechen);
+    dialog.addEventListener("click", beiKlick);
+    dialog.showModal();
+    abbrechen.focus();
+  });
+}
+
+let meldungTimer = null;
+// Erfolg verschwindet nach ~2 s, Fehler bleiben stehen, bis weggetippt.
+function zeigeMeldung(text, { fehler = false } = {}) {
+  const el = document.getElementById("meldung");
+  clearTimeout(meldungTimer);
+  el.textContent = text;
+  el.classList.toggle("fehler", fehler);
+  el.hidden = false;
+  if (!fehler) meldungTimer = setTimeout(() => { el.hidden = true; }, 2000);
+}
+
+function zeigeSchreibrechteHinweis(zeigen) {
+  const el = document.getElementById("schreibrechte-hinweis");
+  if (el) el.hidden = !zeigen;
+}
+
+let schreibVorgangLaeuft = false;
+
+// Ablauf jeder Schreibaktion: Rechte pruefen -> bestaetigen -> Ausloeser
+// sperren -> schreiben -> Meldung -> neu laden. beiAbbruch() setzt z.B. eine
+// Checkbox zurueck (Abbrechen oder Fehler).
+async function fuehreSchreibaktionAus({ ausloeser = null, bestaetigung, ausfuehren, beiAbbruch = () => {} }) {
+  if (schreibVorgangLaeuft) { beiAbbruch(); return; }
+  if (!schreibrechte) {
+    beiAbbruch();
+    zeigeSchreibrechteHinweis(true);
+    zeigeMeldung("Schreiben nicht möglich: Bitte einmal neu anmelden, um Schreibrechte zu erteilen.", { fehler: true });
+    return;
+  }
+  if (!(await bestaetige(bestaetigung))) { beiAbbruch(); return; }
+
+  schreibVorgangLaeuft = true;
+  if (ausloeser) ausloeser.disabled = true;
+  try {
+    // ausfuehren() gibt null, einen Erfolgstext oder { meldung, fehler } zurueck
+    const ergebnis = await ausfuehren();
+    if (ergebnis && ergebnis.fehler) zeigeMeldung(ergebnis.meldung, { fehler: true });
+    else zeigeMeldung(ergebnis || "Gespeichert");
+  } catch (e) {
+    console.error(e);
+    beiAbbruch();
+    zeigeMeldung(e.message, { fehler: true });
+    if (!(e instanceof SchreibKonflikt)) return;
+  } finally {
+    schreibVorgangLaeuft = false;
+    if (ausloeser && ausloeser.isConnected) ausloeser.disabled = false;
+  }
+  // Nach dem Speichern (bzw. nach einem Konflikt) immer frisch neu laden.
+  ladeAlleDaten().catch((f) => {
+    console.error(f);
+    setStatus(`Fehler beim Neuladen: ${f.message}`);
+  });
+}
+
+// ===========================================================================
+// SCHREIBAKTIONEN
+// ===========================================================================
+
+// Aufgabe abhaken / wieder oeffnen (+ Status der verlinkten Detail-Notiz)
+function aufgabeUmschalten(aufgabe, checkbox) {
+  const erledigen = checkbox.checked;
+  const neuerStatus = erledigen ? "abgeschlossen" : "nicht-gestartet";
+  const link = verlinkterPfad(aufgabe.beschreibung);
+  fuehreSchreibaktionAus({
+    ausloeser: checkbox,
+    bestaetigung: {
+      titel: erledigen ? "Als erledigt markieren?" : "Wieder öffnen?",
+      text: erledigen
+        ? `Aufgabe „${aufgabe.titel}“ als erledigt markieren?`
+        : `Aufgabe „${aufgabe.titel}“ wieder öffnen (Status „nicht-gestartet“)?`,
+      hinweis: link ? `Die verlinkte Notiz „${link.split("/").pop()}“ bekommt ebenfalls den Status „${erledigen ? "abgeschlossen" : "nicht begonnen"}“.` : "",
+    },
+    beiAbbruch: () => { if (checkbox.isConnected) checkbox.checked = !erledigen; },
+    ausfuehren: async () => {
+      await schreibeDatei(aufgabe.dateiId, (text) => setzeAufgabeStatusImText(text, aufgabe.titel, neuerStatus));
+      if (!link) return null;
+      // Zweiter, getrennter Schreibvorgang (wie am Desktop): die Aufgabe ist
+      // dann schon gespeichert - ein Fehler hier wird nur gemeldet.
+      try {
+        const notizId = await findeVaultDateiPerPfad(link);
+        if (!notizId) return null;
+        let ohneStatusFeld = false;
+        await schreibeDatei(notizId, (text) => {
+          const neu = setzeFreitextStatus(text, erledigen ? "abgeschlossen" : "nicht begonnen");
+          if (neu === null) { ohneStatusFeld = true; return text; }
+          return neu;
+        });
+        return ohneStatusFeld ? null : "Gespeichert (inkl. Detail-Notiz)";
+      } catch (e) {
+        console.error(e);
+        return { meldung: `Aufgabe gespeichert, Detail-Notiz aber nicht: ${e.message}`, fehler: true };
+      }
+    },
+  });
+}
+
+function klausurStatusSetzen(klausur, neuerStatus, ausloeser) {
+  const geschrieben = neuerStatus === "abgeschlossen";
+  fuehreSchreibaktionAus({
+    ausloeser,
+    bestaetigung: {
+      titel: geschrieben ? "Als geschrieben markieren?" : "Wieder öffnen?",
+      text: geschrieben
+        ? `${klausur.fach} ${klausur.titel} als geschrieben markieren?`
+        : `${klausur.fach} ${klausur.titel} wieder öffnen (Status „geplant“)?`,
+    },
+    ausfuehren: () => schreibeDatei(klausur.dateiId, (text) => setzeFrontmatterFeld(text, "status", neuerStatus)).then(() => null),
+  });
+}
+
+function parsePunkteEingabe(wert) {
+  const text = String(wert ?? "").trim();
+  if (!/^\d{1,2}$/.test(text)) return null;
+  const zahl = Number(text);
+  return zahl >= 0 && zahl <= 15 ? zahl : null;
+}
+
+function klausurPunkteSetzen(klausur, eingabe, ausloeser) {
+  const punkte = parsePunkteEingabe(eingabe.value);
+  if (punkte === null) {
+    zeigeMeldung("Punkte bitte als ganze Zahl von 0 bis 15 eingeben.", { fehler: true });
+    eingabe.focus();
+    return;
+  }
+  fuehreSchreibaktionAus({
+    ausloeser,
+    bestaetigung: { titel: "Punkte speichern?", text: `Punkte für ${klausur.fach} ${klausur.titel} auf ${punkte} setzen?` },
+    ausfuehren: () => schreibeDatei(klausur.dateiId, (text) => setzeFrontmatterFeld(text, "punkte", String(punkte))).then(() => null),
+  });
+}
+
+// Note hinzufuegen (Port von fuege_note_hinzu, inkl. Anlegen von Ordner/Datei)
+function noteHinzufuegen(fach, form, ausloeser) {
+  const art = form.querySelector(".art-auswahl").value;
+  const bezeichnung = form.querySelector(".bezeichnung-eingabe").value.trim().replace(/\s+/g, " ");
+  const punkte = parsePunkteEingabe(form.querySelector(".punkte-eingabe").value);
+  const datumRoh = form.querySelector(".datum-eingabe").value;
+  const datum = /^\d{4}-\d{2}-\d{2}$/.test(datumRoh) ? datumRoh : null;
+  if (!bezeichnung) { zeigeMeldung("Bitte eine Bezeichnung eingeben.", { fehler: true }); return; }
+  if (punkte === null) { zeigeMeldung("Punkte bitte als ganze Zahl von 0 bis 15 eingeben.", { fehler: true }); return; }
+  if (!appDaten.faecherListe.includes(fach)) { zeigeMeldung(`Unbekanntes Fach „${fach}“.`, { fehler: true }); return; }
+
+  const feld = notenFeldname(art);
+  const aktualisiere = (fm) => {
+    const eintraege = Array.isArray(fm[feld]) ? fm[feld] : [];
+    const neuerEintrag = { id: neueNotenId(), bezeichnung, punkte };
+    if (datum) neuerEintrag.datum = datum;
+    eintraege.push(neuerEintrag);
+    fm[feld] = eintraege;
+    return fm;
+  };
+  fuehreSchreibaktionAus({
+    ausloeser,
+    bestaetigung: {
+      titel: "Note hinzufügen?",
+      text: `${art === "schriftlich" ? "Schriftliche" : "Mündliche"} Note „${bezeichnung} – ${punkte} P.“${datum ? ` vom ${formatiereDatumKurz(parseDatumIso(datum))}` : ""} für ${fach} hinzufügen?`,
+    },
+    ausfuehren: async () => {
+      const dateiId = appDaten.notenProFach[fach] && appDaten.notenProFach[fach].dateiId;
+      if (dateiId) {
+        await schreibeDatei(dateiId, (text) => ersetzeFrontmatterPerYaml(text, aktualisiere));
+        return null;
+      }
+      // Noten.md fehlt noch: wie am Desktop anlegen, direkt mit dem Eintrag.
+      const ordnerId = await stelleOrdnerSicher(ordnerIds.noten, fach);
+      const text = ersetzeFrontmatterPerYaml(neueNotenDateiText(fach), aktualisiere);
+      await erstelleDatei(ordnerId, "Noten.md", text);
+      return null;
+    },
+  });
+}
+
+function noteBearbeiten(fach, art, eintrag, form, ausloeser) {
+  const bezeichnung = form.querySelector(".bezeichnung-eingabe").value.trim().replace(/\s+/g, " ");
+  const punkte = parsePunkteEingabe(form.querySelector(".punkte-eingabe").value);
+  if (!bezeichnung) { zeigeMeldung("Bitte eine Bezeichnung eingeben.", { fehler: true }); return; }
+  if (punkte === null) { zeigeMeldung("Punkte bitte als ganze Zahl von 0 bis 15 eingeben.", { fehler: true }); return; }
+  const feld = notenFeldname(art);
+  fuehreSchreibaktionAus({
+    ausloeser,
+    bestaetigung: {
+      titel: "Note ändern?",
+      text: `Note „${eintrag.bezeichnung} – ${eintrag.punkte} P.“ in „${bezeichnung} – ${punkte} P.“ ändern?`,
+    },
+    ausfuehren: () => schreibeDatei(appDaten.notenProFach[fach].dateiId, (text) => ersetzeFrontmatterPerYaml(text, (fm) => {
+      const liste = fm[feld];
+      if (!Array.isArray(liste)) return null;
+      const ziel = liste.find((e) => e && typeof e === "object" && typeof e.id === "string" && e.id.trim() === eintrag.id);
+      if (!ziel) return null;
+      ziel.bezeichnung = bezeichnung;
+      ziel.punkte = punkte;
+      return fm;
+    })).then(() => null),
+  });
+}
+
+function noteLoeschen(fach, art, eintrag, ausloeser) {
+  const feld = notenFeldname(art);
+  fuehreSchreibaktionAus({
+    ausloeser,
+    bestaetigung: {
+      titel: "Note löschen?",
+      text: `Note „${eintrag.bezeichnung} – ${eintrag.punkte} P.“ löschen? Das lässt sich nicht rückgängig machen.`,
+      aktion: "Löschen",
+      gefahr: true,
+    },
+    ausfuehren: () => schreibeDatei(appDaten.notenProFach[fach].dateiId, (text) => ersetzeFrontmatterPerYaml(text, (fm) => {
+      const liste = fm[feld];
+      if (!Array.isArray(liste)) return null;
+      const neu = liste.filter((e) => !(e && typeof e === "object" && typeof e.id === "string" && e.id.trim() === eintrag.id));
+      if (neu.length === liste.length) return null;
+      fm[feld] = neu;
+      return fm;
+    })).then(() => null),
+  });
+}
+
+const KLAUSUR_TITEL_MUSTER = /^\s*Klausur\b/i;
+
+function aufgabeAnlegen(form, ausloeser) {
+  const einzeilig = (wert) => String(wert || "").replace(/\s+/g, " ").trim();
+  const titel = einzeilig(form.querySelector("#neu-titel").value).replace(/^#+\s*/, "");
+  const fach = form.querySelector("#neu-fach").value;
+  const deadline = form.querySelector("#neu-deadline").value;
+  const prioritaet = form.querySelector("#neu-prioritaet").value;
+  const beschreibung = einzeilig(form.querySelector("#neu-beschreibung").value);
+
+  if (!titel) { zeigeMeldung("Bitte einen Titel eingeben.", { fehler: true }); return; }
+  if (KLAUSUR_TITEL_MUSTER.test(titel)) {
+    zeigeMeldung("Klausuren bitte nicht als Aufgabe anlegen – sie werden im Klausuren-Tab verwaltet.", { fehler: true });
+    return;
+  }
+  if (!fach || !(appDaten.faecherListe.includes(fach) || fach === "Privat")) { zeigeMeldung("Bitte ein Fach wählen.", { fehler: true }); return; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(deadline)) { zeigeMeldung("Bitte eine Deadline wählen.", { fehler: true }); return; }
+  if (!(prioritaet in PRIORITAET_REIHENFOLGE)) { zeigeMeldung("Ungültige Priorität.", { fehler: true }); return; }
+
+  const ueberschrift = `${fach}: ${titel}`;
+  const alle = Object.values(appDaten.aufgaben).flat();
+  if (alle.some((a) => a.titel === ueberschrift && isoDatum(a.deadline) === deadline)) {
+    zeigeMeldung("Diese Aufgabe gibt es schon (gleiches Fach, Titel und Deadline).", { fehler: true });
+    return;
+  }
+
+  const [jahr, monat] = deadline.split("-").map(Number);
+  const dateiname = `Aufgaben-${jahr}-${String(monat).padStart(2, "0")}.md`;
+  const eintrag = { fach, titel, deadline, prioritaet, beschreibung };
+  fuehreSchreibaktionAus({
+    ausloeser,
+    bestaetigung: {
+      titel: "Aufgabe anlegen?",
+      text: `Aufgabe „${ueberschrift}“ bis ${formatiereDatumKurz(parseDatumIso(deadline))} (Priorität ${prioritaet}) anlegen?`,
+      hinweis: `Ziel: Aufgaben/${dateiname}`,
+    },
+    ausfuehren: async () => {
+      const datei = await driveFindFileByName(dateiname, ordnerIds.aufgaben);
+      if (datei) {
+        await schreibeDatei(datei.id, (text) => haengeAufgabeAn(text, eintrag));
+      } else {
+        await erstelleDatei(ordnerIds.aufgaben, dateiname, haengeAufgabeAn(neueAufgabenDateiText(jahr, monat), eintrag));
+      }
+      form.reset();
+      return "Aufgabe angelegt";
+    },
+  });
+}
+
+// ===========================================================================
 // RENDERING - Design "Clean Dark" (Tokens identisch mit dashboard.py)
 // ===========================================================================
 
@@ -925,6 +1652,11 @@ const ICON_PFADE = {
   hinweis: '<circle cx="12" cy="12" r="8.5"/><path d="M12 8v5M12 16.2v.1"/>',
   aktualisieren: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4.5H15"/>',
   abmelden: '<path d="M12 3.5v8M6.7 6.7a7.5 7.5 0 1 0 10.6 0"/>',
+  haken: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  stift: '<path d="M4.5 19.5h4l10-10-4-4-10 10z"/>',
+  muell: '<path d="M4.5 7h15M10 11v6M14 11v6M6.5 7l1 12.5h9l1-12.5M9.5 7V4.5h5V7"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  rueckgaengig: '<path d="M9 13.5 4.5 9 9 4.5"/><path d="M4.5 9h10a5 5 0 0 1 0 10h-3"/>',
 };
 
 function icon(name, groesse = 18, klasse = "icon") {
@@ -958,7 +1690,26 @@ function karteHtml(titel, inhalt, { meta = "", titelKlasse = "", flach = false }
     </section>`;
 }
 
+// Aufgaben/Klausuren, auf die die gerenderten Bedienelemente per Index
+// verweisen (data-aufgabe / data-klausur) - wird bei jedem Rendern neu gebaut.
+let aufgabeRegister = [];
+let klausurRegister = [];
+const registriereAufgabe = (a) => aufgabeRegister.push(a) - 1;
+const registriereKlausur = (k) => klausurRegister.push(k) - 1;
+
+let feldZaehler = 0; // eindeutige IDs fuer <label for>
+const neueFeldId = (praefix) => `${praefix}-${++feldZaehler}`;
+
+// Checkbox = erledigt (wie render_aufgabe_check am Desktop), per echtem
+// <label> auf 44 px Touch-Flaeche vergroessert.
+function aufgabeCheckHtml(a, erledigt) {
+  const beschriftung = (erledigt ? "Wieder öffnen: " : "Erledigt: ") + a.titel;
+  return `<label class="check-ziel" title="${esc(beschriftung)}"><input type="checkbox" class="aufgabe-check" data-aufgabe="${registriereAufgabe(a)}"${erledigt ? " checked" : ""}><span class="sr-only">${esc(beschriftung)}</span></label>`;
+}
+
 function renderAlles() {
+  aufgabeRegister = [];
+  klausurRegister = [];
   renderKopf();
   renderHeuteTab();
   renderAufgabenTab();
@@ -1024,10 +1775,10 @@ function heuteAufgabenHtml(aufgaben, heute) {
     if (art === "ueberfaellig") { faellig = countdownText(diffTage(dateOnly(a.deadline), heute)); klasse = "ton-hoch"; }
     else if (art === "heute") { faellig = "heute"; klasse = "ton-mittel"; }
     else { faellig = WOCHENTAGE[(a.deadline.getDay() + 6) % 7].slice(0, 2); klasse = "ton-niedrig"; }
-    return `<li class="zeile"><span class="zeile-text"><span class="zeile-titel">${esc(a.titel)}</span></span><span class="faellig ${klasse}">${esc(faellig)}</span></li>`;
+    return `<li class="zeile zeile-mit-check">${aufgabeCheckHtml(a, false)}<span class="zeile-text"><span class="zeile-titel">${esc(a.titel)}</span></span><span class="faellig ${klasse}">${esc(faellig)}</span></li>`;
   }).join("");
   const mehr = eintraege.length > 6 ? `<p class="karte-fuss">+ ${eintraege.length - 6} weitere im Bereich Aufgaben</p>` : "";
-  return karteHtml("Aufgaben", `<ul class="liste">${zeilen}</ul>${mehr}<p class="karte-fuss">Abhaken am Desktop</p>`, { meta: esc(teile.join(" · ") || "nichts dringend") });
+  return karteHtml("Aufgaben", `<ul class="liste">${zeilen}</ul>${mehr}`, { meta: esc(teile.join(" · ") || "nichts dringend") });
 }
 
 function kpiHtml(kpis, heuteGesamt) {
@@ -1095,11 +1846,11 @@ function aufgabeKarteHtml(a, { ueberfaellig = false, erledigt = false } = {}) {
     : "";
   const fach = a.fach && a.fach !== "-" && a.fach !== "–" ? `${esc(a.fach)} · ` : "";
   return `
-    <li class="zeile aufgabe-zeile${erledigt ? " erledigt" : ""}">
-      <span class="punkt ${erledigt ? "ton-niedrig" : ton(a.prioritaet)}" title="${esc(PRIORITAET_TEXT[a.prioritaet] || "")}"></span>
+    <li class="zeile aufgabe-zeile zeile-mit-check${erledigt ? " erledigt" : ""}">
+      ${aufgabeCheckHtml(a, erledigt)}
       <div class="zeile-text">
         <div class="zeile-titel">${esc(a.titel)}</div>
-        <div class="zeile-meta">${fach}<span class="${ueberfaellig ? "ton-hoch" : ""}">${esc(formatiereDatumLang(a.deadline))}</span> · ${esc(PRIORITAET_TEXT[a.prioritaet] || a.prioritaet)}</div>
+        <div class="zeile-meta">${fach}<span class="${ueberfaellig ? "ton-hoch" : ""}">${esc(formatiereDatumLang(a.deadline))}</span> · <span class="${erledigt ? "" : ton(a.prioritaet)}">${esc(PRIORITAET_TEXT[a.prioritaet] || a.prioritaet)}</span></div>
         ${bald ? `<div class="pill-reihe">${bald}</div>` : ""}
         <details class="aufklapper">
           <summary>${chevron()} Details</summary>
@@ -1122,7 +1873,8 @@ function renderAufgabenTab() {
   // Nur echte Aufgaben - Klausuren stehen unter Heute ("Naechste Klausuren")
   // und im Klausuren-Tab.
   const { aufgaben } = appDaten;
-  let html = listenKarteHtml("Überfällig", aufgaben.ueberfaellig, (a) => aufgabeKarteHtml(a, { ueberfaellig: true }), { titelKlasse: "ton-hoch" });
+  let html = neueAufgabeKarteHtml();
+  html += listenKarteHtml("Überfällig", aufgaben.ueberfaellig, (a) => aufgabeKarteHtml(a, { ueberfaellig: true }), { titelKlasse: "ton-hoch" });
   html += listenKarteHtml("Heute fällig", aufgaben.heute, (a) => aufgabeKarteHtml(a), { leerText: "Nichts heute fällig." });
   html += listenKarteHtml("Diese Woche", aufgaben.diese_woche, (a) => aufgabeKarteHtml(a), { leerText: "Nichts diese Woche fällig." });
   html += listenKarteHtml("Später", aufgaben.spaeter, (a) => aufgabeKarteHtml(a), { leerText: "Keine weiteren Aufgaben." });
@@ -1131,13 +1883,48 @@ function renderAufgabenTab() {
     html += `
       <section class="karte">
         <details>
-          <summary class="karte-kopf"><h2>${chevron()} Vergangene Aufgaben <span class="zaehler">${aufgaben.abgeschlossen.length}</span></h2></summary>
+          <summary class="karte-kopf"><h2>${chevron()} Vergangene Aufgaben <span class="zaehler">${aufgaben.abgeschlossen.length}</span></h2><span class="karte-meta">Haken entfernen = wieder öffnen</span></summary>
           <ul class="liste">${aufgaben.abgeschlossen.map((a) => aufgabeKarteHtml(a, { erledigt: true })).join("")}</ul>
         </details>
       </section>`;
   }
 
-  document.getElementById("tab-aufgaben").innerHTML = `<div class="stapel">${html}</div>`;
+  const container = document.getElementById("tab-aufgaben");
+  container.innerHTML = `<div class="stapel">${html}</div>`;
+  const details = container.querySelector("#neue-aufgabe-details");
+  details.addEventListener("toggle", () => { neueAufgabeOffen = details.open; });
+  const form = container.querySelector("#neue-aufgabe-form");
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    aufgabeAnlegen(form, form.querySelector("button[type=submit]"));
+  });
+}
+
+// "Aufgabe hinzufuegen": Titel, Fach (Fach-Ordner + Privat), Deadline
+// (Pflicht), Prioritaet, Beschreibung. Aufgeklappt bleibt es nach dem
+// Neuladen, solange der Nutzer es nicht selbst zuklappt.
+let neueAufgabeOffen = false;
+function neueAufgabeKarteHtml() {
+  const faecher = [...appDaten.faecherListe, "Privat"].map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join("");
+  return `
+    <section class="karte">
+      <details id="neue-aufgabe-details"${neueAufgabeOffen ? " open" : ""}>
+        <summary class="karte-kopf"><h2>${icon("plus", 16)} Aufgabe hinzufügen</h2></summary>
+        <form id="neue-aufgabe-form" class="formular karte-inhalt" novalidate>
+          <div class="feld feld-voll"><label class="feld-label" for="neu-titel">Titel</label>
+            <input id="neu-titel" type="text" maxlength="200" placeholder="z.B. S. 45 Nr. 3–7" required></div>
+          <div class="feld"><label class="feld-label" for="neu-fach">Fach</label>
+            <select id="neu-fach" required><option value="">Fach wählen</option>${faecher}</select></div>
+          <div class="feld"><label class="feld-label" for="neu-deadline">Deadline</label>
+            <input id="neu-deadline" type="date" required></div>
+          <div class="feld"><label class="feld-label" for="neu-prioritaet">Priorität</label>
+            <select id="neu-prioritaet"><option value="hoch">hoch</option><option value="mittel" selected>mittel</option><option value="niedrig">niedrig</option></select></div>
+          <div class="feld feld-voll"><label class="feld-label" for="neu-beschreibung">Beschreibung (optional)</label>
+            <input id="neu-beschreibung" type="text" maxlength="500"></div>
+          <button type="submit" class="btn btn-primaer">${icon("plus", 16)} Anlegen</button>
+        </form>
+      </details>
+    </section>`;
 }
 
 // --- Klausuren ---------------------------------------------------------------
@@ -1179,16 +1966,39 @@ function klausurKarteHtml(k, index, typ) {
           <span class="zeile-text"><span class="zeile-titel">${esc(k.fach)} · ${esc(k.titel)}</span><span class="zeile-meta">${esc(formatiereDatumKurz(k.datum))}</span></span>
           ${ergebnisBadgeHtml(k)}
         </button>
-        ${k.fehleranalyse.length || k.korrekturQuelle ? `<div class="vergangen-extra">${fehleranalyseHtml(k)}</div>` : ""}
+        <div class="vergangen-extra">
+          ${k.fehleranalyse.length || k.korrekturQuelle ? fehleranalyseHtml(k) : ""}
+          ${klausurPunkteAktionenHtml(k)}
+        </div>
       </li>`;
   }
   const farbstufe = typ === "abzuhaken" ? "hoch" : klausurFarbstufe(k.tage_bis);
+  const geschrieben = typ === "abzuhaken"
+    ? `<div class="zeile-aktion"><button type="button" class="btn btn-sekundaer btn-klein" data-aktion="klausur-status" data-status="abgeschlossen" data-klausur="${registriereKlausur(k)}">${icon("haken", 16)} Geschrieben</button></div>`
+    : "";
   return `
-    <li><button type="button" class="zeile" data-klausur-index="${index}" data-klausur-typ="${typ}">
+    <li${geschrieben ? ` class="mit-aktion"` : ""}><button type="button" class="zeile" data-klausur-index="${index}" data-klausur-typ="${typ}">
       <span class="punkt ${ton(farbstufe)}"></span>
       <span class="zeile-text"><span class="zeile-titel">${esc(k.fach)} · ${esc(k.titel)}</span><span class="zeile-meta">${meta}</span></span>
       <span class="zahl ${ton(farbstufe)}">${esc(countdownText(k.tage_bis))}</span>
-    </button></li>`;
+    </button>${geschrieben}</li>`;
+}
+
+// Punkte eintragen/aendern (0-15) + "Wieder oeffnen" bei vergangenen
+// Klausuren - wie render_vergangene_klausur_karte am Desktop.
+function klausurPunkteAktionenHtml(k) {
+  const nr = registriereKlausur(k);
+  const feldId = neueFeldId("klausur-punkte");
+  const label = k.punkteZahl !== null ? "Punkte ändern" : "Punkte eintragen";
+  return `
+    <div class="vergangen-aktionen">
+      <form class="formular punkte-form" data-klausur="${nr}" novalidate>
+        <div class="feld feld-zeile"><label class="feld-label" for="${feldId}">${label} (0–15)</label>
+          <input id="${feldId}" type="number" inputmode="numeric" min="0" max="15" step="1" class="punkte-eingabe" value="${k.punkteZahl ?? ""}" required></div>
+        <button type="submit" class="btn btn-sekundaer">Speichern</button>
+      </form>
+      <button type="button" class="btn btn-sekundaer btn-klein" data-aktion="klausur-status" data-status="geplant" data-klausur="${nr}">${icon("rueckgaengig", 16)} Wieder öffnen</button>
+    </div>`;
 }
 
 function renderKlausurenTab() {
@@ -1196,17 +2006,16 @@ function renderKlausurenTab() {
   const listen = { anstehend: klausurenAnstehend, abzuhaken: klausurenAbzuhaken, abgeschlossen: klausurenAbgeschlossen };
   let html = "";
 
-  // Nur lesend: abhaken geht bewusst nur am Desktop (Mobile schreibt nie).
   if (klausurenAbzuhaken.length) {
     html += listenKarteHtml(`Geschrieben?`, klausurenAbzuhaken, (k, i) => klausurKarteHtml(k, i, "abzuhaken"),
-      { titelKlasse: "ton-hoch", meta: "am Desktop abhaken" });
+      { titelKlasse: "ton-hoch" });
   }
   html += listenKarteHtml("Anstehende Klausuren", klausurenAnstehend, (k, i) => klausurKarteHtml(k, i, "anstehend"),
     { leerText: "Keine anstehenden Klausuren." });
   html += `
     <section class="karte">
       <details open>
-        <summary class="karte-kopf"><h2>${chevron()} Vergangene Klausuren <span class="zaehler">${klausurenAbgeschlossen.length}</span></h2><span class="karte-meta">Punkte am Desktop</span></summary>
+        <summary class="karte-kopf"><h2>${chevron()} Vergangene Klausuren <span class="zaehler">${klausurenAbgeschlossen.length}</span></h2></summary>
         ${klausurenAbgeschlossen.length
           ? `<ul class="liste">${klausurenAbgeschlossen.map((k, i) => klausurKarteHtml(k, i, "abgeschlossen")).join("")}</ul>`
           : `<p class="leer">Noch keine vergangenen Klausuren.</p>`}
@@ -1229,8 +2038,11 @@ const LERNSTAND_TON = { verstanden: "ton-mittel", teilweise: "ton-niedrig", offe
 function zeigeKlausurDetail(k) {
   const overlay = document.getElementById("klausur-detail-overlay");
   const tage = diffTage(k.datum, appDaten.heute);
-  let countdown = countdownText(tage);
-  if (tage < 0 && k.status !== "abgeschlossen") countdown += " – am Desktop abhaken";
+  const countdown = countdownText(tage);
+  const nr = registriereKlausur(k);
+  const aktionen = k.status === "abgeschlossen"
+    ? `<section class="karte"><div class="karte-inhalt">${klausurPunkteAktionenHtml(k)}</div></section>`
+    : `<div><button type="button" class="btn btn-sekundaer" data-aktion="klausur-status" data-status="abgeschlossen" data-klausur="${nr}">${icon("haken", 16)} Geschrieben</button></div>`;
   const themen = k.themen.map((thema) => {
     const e = k.lernstand[thema];
     return `
@@ -1248,6 +2060,7 @@ function zeigeKlausurDetail(k) {
       </li>`;
   }).join("");
 
+  offeneKlausurId = k.dateiId;
   overlay.innerHTML = `
     <div class="detail">
       <button type="button" class="zurueck-link" id="detail-zurueck">${icon("zurueck")} Zurück</button>
@@ -1262,6 +2075,7 @@ function zeigeKlausurDetail(k) {
         </div>
       </header>
       <div class="stapel">
+        ${aktionen}
         ${k.status === "abgeschlossen" && (k.fehleranalyse.length || k.korrekturQuelle) ? `<section class="karte"><div class="karte-inhalt">${fehleranalyseHtml(k)}</div></section>` : ""}
         ${karteHtml(`Themen <span class="zaehler">${k.themen.length}</span>`, k.themen.length ? `<ul class="liste">${themen}</ul>` : `<p class="leer">Keine Themen hinterlegt.</p>`, { meta: "Timer am Desktop" })}
       </div>
@@ -1271,6 +2085,20 @@ function zeigeKlausurDetail(k) {
   const zurueck = document.getElementById("detail-zurueck");
   zurueck.focus();
   zurueck.addEventListener("click", () => { overlay.hidden = true; });
+}
+
+// Nach dem Neuladen (z.B. nach "Geschrieben" in der Detailansicht) die
+// offene Detailansicht mit den frischen Daten neu zeichnen.
+let offeneKlausurId = null;
+function aktualisiereOffeneDetailansicht() {
+  const overlay = document.getElementById("klausur-detail-overlay");
+  if (overlay.hidden || !offeneKlausurId) return;
+  const alle = [...appDaten.klausurenAnstehend, ...appDaten.klausurenAbzuhaken, ...appDaten.klausurenAbgeschlossen];
+  const k = alle.find((x) => x.dateiId === offeneKlausurId);
+  if (!k) { overlay.hidden = true; return; }
+  const scroll = overlay.scrollTop;
+  zeigeKlausurDetail(k);
+  overlay.scrollTop = scroll;
 }
 
 // --- Punkte --------------------------------------------------------------------
@@ -1304,11 +2132,111 @@ function renderPunkteTab() {
               ? `<div class="gesamt-zeile"><span class="gesamt">${Math.round(gesamt)}</span><span class="gesamt-genau">genau ${gesamt.toFixed(1)} von 15</span></div>`
               : `<p class="hinweis-text" style="margin-top:6px">Noch unvollständig – schriftliche und/oder mündliche Note fehlt.</p>`}
           </div>
+          ${notenVerwaltungHtml(fach)}
         </div>
       </section>`;
   }).join("");
 
-  document.getElementById("tab-punkte").innerHTML = `<div class="raster">${html}</div>`;
+  const container = document.getElementById("tab-punkte");
+  container.innerHTML = `<div class="raster">${html}</div>`;
+  container.querySelectorAll(".hinzufuegen-form").forEach((form) => {
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      noteHinzufuegen(form.dataset.fach, form, form.querySelector("button[type=submit]"));
+    });
+  });
+  container.querySelectorAll(".noten-eintrag[data-id]").forEach((zeile) => {
+    const anzeige = zeile.querySelector(".eintrag-anzeige");
+    const form = zeile.querySelector(".bearbeiten-form");
+    const { fach, art, id } = zeile.dataset;
+    const eintrag = () => appDaten.notenProFach[fach][art].find((e) => e.id === id);
+    const umschalten = (bearbeiten) => {
+      anzeige.hidden = bearbeiten;
+      form.hidden = !bearbeiten;
+      (bearbeiten ? form.querySelector(".bezeichnung-eingabe") : zeile.querySelector(".bearbeiten-btn")).focus();
+    };
+    zeile.querySelector(".bearbeiten-btn").addEventListener("click", () => umschalten(true));
+    zeile.querySelector(".abbrechen-btn").addEventListener("click", () => umschalten(false));
+    zeile.querySelector(".loeschen-btn").addEventListener("click", (e) => noteLoeschen(fach, art, eintrag(), e.currentTarget));
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      noteBearbeiten(fach, art, eintrag(), form, form.querySelector("button[type=submit]"));
+    });
+  });
+}
+
+// Ein Noten-Eintrag mit Bearbeiten/Loeschen (wie render_note_eintrag am
+// Desktop). Eintraege ohne id bleiben reine Anzeige.
+function noteEintragHtml(fach, art, e, doppelt = false) {
+  const doppeltHtml = doppelt ? ` <em class="doppelt-hinweis" title="Gleiches Datum wie eine Klausur mit Punkten – die Klausur hat Vorrang">(doppelt, zählt nicht)</em>` : "";
+  const datum = e.datum ? ` <span class="hinweis-text">${esc(formatiereDatumKurz(parseDatumIso(e.datum)))}</span>` : "";
+  const text = `${esc(e.bezeichnung)} · <span class="mono">${esc(e.punkte)}</span> P.${datum}${doppeltHtml}`;
+  if (!e.id) {
+    return `<li class="noten-eintrag"><span class="eintrag-text" title="Ohne id eingetragen – nur direkt in der Noten-Notiz bearbeitbar">${text} <span class="hinweis-text">(manuell in Notiz)</span></span></li>`;
+  }
+  const bezId = neueFeldId("note-bez");
+  const pktId = neueFeldId("note-pkt");
+  return `
+    <li class="noten-eintrag" data-fach="${esc(fach)}" data-art="${art}" data-id="${esc(e.id)}">
+      <div class="eintrag-anzeige">
+        <span class="eintrag-text">${text}</span>
+        <button type="button" class="btn btn-sekundaer btn-klein btn-icon bearbeiten-btn" aria-label="Bearbeiten: ${esc(e.bezeichnung)}" title="Bearbeiten">${icon("stift", 16)}</button>
+        <button type="button" class="btn btn-sekundaer btn-klein btn-icon btn-gefahr loeschen-btn" aria-label="Löschen: ${esc(e.bezeichnung)}" title="Löschen">${icon("muell", 16)}</button>
+      </div>
+      <form class="formular bearbeiten-form" novalidate hidden>
+        <div class="feld feld-breit"><label class="feld-label" for="${bezId}">Bezeichnung</label>
+          <input id="${bezId}" type="text" class="bezeichnung-eingabe" value="${esc(e.bezeichnung)}" maxlength="120" required></div>
+        <div class="feld"><label class="feld-label" for="${pktId}">Punkte</label>
+          <input id="${pktId}" type="number" inputmode="numeric" min="0" max="15" step="1" class="punkte-eingabe" value="${esc(e.punkte)}" required></div>
+        <button type="submit" class="btn btn-primaer btn-klein">Speichern</button>
+        <button type="button" class="btn btn-sekundaer btn-klein abbrechen-btn">Abbrechen</button>
+      </form>
+    </li>`;
+}
+
+// Verlauf schriftlich (Klausur-Punkte nur lesend + manuelle Noten), Verlauf
+// muendlich und "Note hinzufuegen" - wie render_fach_punkte_karte am Desktop
+// (ohne Notenverlauf-Diagramm).
+function notenVerwaltungHtml(fach) {
+  const noten = appDaten.notenProFach[fach] || { schriftlich: [], muendlich: [] };
+  const klausurenMitPunkten = appDaten.klausurenAbgeschlossen.filter((k) => k.fachOrdnerName === fach && k.punkteZahl !== null);
+  const klausurDaten = new Set(klausurenMitPunkten.map((k) => isoDatum(k.datum)));
+
+  const klausurZeilen = klausurenMitPunkten.map((k) =>
+    `<li class="noten-eintrag"><span class="eintrag-text" title="Aus der Klausur-Notiz – im Klausuren-Tab ändern">Klausur ${esc(k.titel)} · <span class="mono">${k.punkteZahl}</span> P. <span class="hinweis-text">(aus Klausur)</span></span></li>`);
+  const manuelleZeilen = noten.schriftlich.map((e) => noteEintragHtml(fach, "schriftlich", e, Boolean(e.datum && klausurDaten.has(e.datum)))).reverse();
+  const schriftlich = [...klausurZeilen, ...manuelleZeilen];
+  const muendlich = noten.muendlich.map((e) => noteEintragHtml(fach, "muendlich", e)).reverse();
+
+  const artId = neueFeldId("art");
+  const bezId = neueFeldId("bez");
+  const pktId = neueFeldId("pkt");
+  const datId = neueFeldId("dat");
+  return `
+    <div class="abschnitt-trenner">
+      <details class="aufklapper">
+        <summary>${chevron()} Verlauf schriftlich <span class="zaehler">${schriftlich.length}</span></summary>
+        <div class="aufklapper-inhalt"><ul class="noten-liste">${schriftlich.join("") || `<li class="hinweis-text">Noch keine schriftliche Note (Punkte vergangener Klausuren zählen automatisch mit).</li>`}</ul></div>
+      </details>
+      <details class="aufklapper">
+        <summary>${chevron()} Verlauf mündlich <span class="zaehler">${muendlich.length}</span></summary>
+        <div class="aufklapper-inhalt"><ul class="noten-liste">${muendlich.join("") || `<li class="hinweis-text">Noch keine Eintragungen.</li>`}</ul></div>
+      </details>
+      <details class="aufklapper">
+        <summary>${icon("plus", 16)} Note hinzufügen</summary>
+        <form class="formular hinzufuegen-form" data-fach="${esc(fach)}" novalidate>
+          <div class="feld"><label class="feld-label" for="${artId}">Art</label>
+            <select id="${artId}" class="art-auswahl"><option value="schriftlich">Schriftlich (Klassenarbeit)</option><option value="muendlich">Mündlich</option></select></div>
+          <div class="feld feld-breit"><label class="feld-label" for="${bezId}">Bezeichnung</label>
+            <input id="${bezId}" type="text" class="bezeichnung-eingabe" placeholder="z.B. Klassenarbeit 2" maxlength="120" required></div>
+          <div class="feld"><label class="feld-label" for="${pktId}">Punkte</label>
+            <input id="${pktId}" type="number" inputmode="numeric" min="0" max="15" step="1" class="punkte-eingabe" required></div>
+          <div class="feld"><label class="feld-label" for="${datId}">Datum (optional)</label>
+            <input id="${datId}" type="date" class="datum-eingabe"></div>
+          <button type="submit" class="btn btn-primaer">Hinzufügen</button>
+        </form>
+      </details>
+    </div>`;
 }
 
 // --- Begleiter -------------------------------------------------------------------
@@ -1404,9 +2332,41 @@ function initTabs() {
   });
 }
 
+// Schreib-Bedienelemente per Event-Delegation (die Tabs werden bei jedem
+// Neuladen komplett neu gerendert).
+function initSchreibAktionen() {
+  const bereich = document.getElementById("inhalt-bereich");
+  bereich.addEventListener("change", (e) => {
+    const box = e.target.closest(".aufgabe-check");
+    if (!box) return;
+    const aufgabe = aufgabeRegister[Number(box.dataset.aufgabe)];
+    if (aufgabe) aufgabeUmschalten(aufgabe, box);
+  });
+  bereich.addEventListener("click", (e) => {
+    const btn = e.target.closest('[data-aktion="klausur-status"]');
+    if (!btn) return;
+    const klausur = klausurRegister[Number(btn.dataset.klausur)];
+    if (klausur) klausurStatusSetzen(klausur, btn.dataset.status, btn);
+  });
+  bereich.addEventListener("submit", (e) => {
+    const form = e.target.closest(".punkte-form");
+    if (!form) return;
+    e.preventDefault();
+    const klausur = klausurRegister[Number(form.dataset.klausur)];
+    if (klausur) klausurPunkteSetzen(klausur, form.querySelector(".punkte-eingabe"), form.querySelector("button[type=submit]"));
+  });
+
+  document.getElementById("meldung").addEventListener("click", (e) => { e.currentTarget.hidden = true; });
+  document.getElementById("schreibrechte-btn").addEventListener("click", () => {
+    autoLoginVersuch = false;
+    tokenClient.requestAccessToken({ prompt: "consent" });
+  });
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   initAuth();
   initTabs();
+  initSchreibAktionen();
 
   document.getElementById("anmelden-btn").addEventListener("click", () => {
     document.getElementById("anmelde-fehler").hidden = true;

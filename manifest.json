@@ -1,7 +1,7 @@
 {
   "name": "Schul-Dashboard",
   "short_name": "Dashboard",
-  "description": "Nur-Lese-Ansicht auf Aufgaben, Klausuren, Punkte und Lernbegleiter",
+  "description": "Aufgaben, Klausuren, Punkte und Lernbegleiter – ansehen und abhaken",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

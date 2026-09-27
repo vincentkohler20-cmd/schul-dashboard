@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Schule – Dashboard (nur lesen)</title>
+<title>Schule – Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
@@ -48,7 +48,7 @@
 <div class="seite">
   <header class="kopf">
     <div class="kopf-oben">
-      <div class="kopf-datum" id="kopf-datum">Nur-Lese-Ansicht</div>
+      <div class="kopf-datum" id="kopf-datum">Schul-Dashboard</div>
       <div class="header-aktionen" id="header-aktionen" hidden>
         <button id="aktualisieren-btn" class="icon-btn" title="Aktualisieren" aria-label="Aktualisieren">
           <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4.5H15"/></svg>
@@ -62,18 +62,22 @@
       <h1 id="seitentitel">Schul-Dashboard</h1>
       <div class="offen-chip" id="offen-chip" title="Heute noch empfohlene Lernminuten" hidden></div>
     </div>
-    <p class="untertitel" id="status-zeile">Nur-Lese-Ansicht · verbunden mit deinem Google Drive</p>
+    <p class="untertitel" id="status-zeile">Verbunden mit deinem Google Drive</p>
   </header>
 
   <main id="app">
     <section id="anmelde-bereich" class="anmelde-bereich">
-      <p>Melde dich mit deinem Google-Konto an, um deinen Vault zu lesen.</p>
+      <p>Melde dich mit deinem Google-Konto an, um deinen Vault zu öffnen.</p>
       <button id="anmelden-btn" class="btn btn-primaer">Mit Google anmelden</button>
       <p id="anmelde-fehler" class="fehler-text" hidden></p>
     </section>
 
     <section id="inhalt-bereich" class="inhalt-bereich" hidden>
       <div id="vault-hinweis" class="hinweis-banner" role="status" hidden></div>
+      <div id="schreibrechte-hinweis" class="hinweis-banner hinweis-mit-aktion" role="status" hidden>
+        <span>Bitte einmal neu anmelden, um Schreibrechte zu erteilen – bis dahin kann nur gelesen werden.</span>
+        <button id="schreibrechte-btn" type="button" class="btn btn-sekundaer btn-klein">Neu anmelden</button>
+      </div>
       <section id="tab-heute" class="tab-inhalt"></section>
       <section id="tab-aufgaben" class="tab-inhalt" hidden></section>
       <section id="tab-klausuren" class="tab-inhalt" hidden></section>
@@ -84,6 +88,22 @@
     </section>
   </main>
 </div>
+
+<!-- Bestaetigungsdialog vor jedem Speichern (siehe bestaetige() in app.js) -->
+<dialog id="bestaetigen-dialog" class="dialog" aria-labelledby="bestaetigen-titel" aria-describedby="bestaetigen-text">
+  <div class="dialog-inhalt">
+    <h2 id="bestaetigen-titel">Speichern?</h2>
+    <p id="bestaetigen-text"></p>
+    <p id="bestaetigen-hinweis" class="hinweis-text" hidden></p>
+    <div class="dialog-aktionen">
+      <button type="button" id="bestaetigen-abbrechen" class="btn btn-sekundaer">Abbrechen</button>
+      <button type="button" id="bestaetigen-ok" class="btn btn-primaer">Speichern</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Erfolg (verschwindet nach ~2 s) bzw. Fehler (bleibt, bis weggetippt) -->
+<div id="meldung" class="meldung" role="status" aria-live="polite" hidden></div>
 
 <script src="https://accounts.google.com/gsi/client" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>

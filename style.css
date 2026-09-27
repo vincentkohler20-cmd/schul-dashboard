@@ -286,6 +286,90 @@ details[open] > summary .chevron { transform: rotate(90deg); }
 }
 .hinweis-details { margin-top: 10px; font-size: 12px; word-break: break-all; }
 
+/* --- Schreiben (seit 2026-09-27) ---------------------------------------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.btn-klein { height: 44px; padding: 0 14px; font-size: 13px; }
+.btn-icon { width: 44px; padding: 0; }
+.btn-gefahr { color: var(--urgent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Checkbox = erledigt; das <label> vergroessert die Touch-Flaeche auf 44 px */
+input[type=checkbox] { accent-color: #EDEDED; }
+.check-ziel {
+  width: 44px; height: 44px; margin: -12px 0 -12px -12px; flex-shrink: 0;
+  display: grid; place-items: center; cursor: pointer; border-radius: var(--radius-inner);
+}
+.aufgabe-check { width: 20px; height: 20px; margin: 0; cursor: pointer; }
+.aufgabe-zeile .check-ziel { margin-top: -11px; }
+.check-ziel:has(.aufgabe-check:disabled) { opacity: 0.5; cursor: default; }
+
+/* Zeile mit eigenem Aktions-Button daneben ("Geschrieben") */
+/* Handy: Button unter dem Text (eingerueckt wie der Titel), ab 768 px daneben */
+.liste > li.mit-aktion > .zeile { padding-bottom: 8px; }
+.zeile-aktion { padding: 0 16px 14px 36px; }
+
+/* Formulare */
+.formular { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.feld { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.feld-voll { flex: 1 1 100%; }
+.feld-breit { flex: 1 1 180px; }
+.feld-label { font-size: 12px; color: var(--muted); }
+input[type=text], input[type=number], input[type=date], select {
+  height: 44px; padding: 0 12px; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-inner);
+  font-family: var(--font); font-size: 16px; min-width: 0; width: 100%;
+  -webkit-appearance: none; appearance: none;
+}
+select { padding-right: 32px; background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%); background-position: calc(100% - 17px) 19px, calc(100% - 12px) 19px; background-size: 5px 5px; background-repeat: no-repeat; }
+input[type=date] { min-width: 150px; }
+input[type=number] { font-family: var(--font-mono); width: 88px; }
+input:focus, select:focus { outline: none; border-color: var(--text); }
+input:focus-visible, select:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+#neue-aufgabe-form { padding-top: 16px; }
+#neue-aufgabe-form .feld:not(.feld-voll) { flex: 1 1 140px; }
+
+/* Vergangene Klausuren: Punkte + Wieder oeffnen */
+.vergangen-extra:empty { display: none; }
+.vergangen-aktionen { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.feld-zeile { flex-direction: column; }
+
+/* Punkte-Tab: Verlauf + Bearbeiten */
+.noten-liste { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.noten-eintrag { min-height: 44px; color: var(--text); font-size: 13px; display: flex; align-items: center; }
+.noten-eintrag .eintrag-text { flex: 1; min-width: 0; }
+.eintrag-anzeige { display: flex; align-items: center; gap: 8px; width: 100%; }
+.doppelt-hinweis { color: var(--muted); font-style: normal; }
+.bearbeiten-form { width: 100%; padding: 8px 0; }
+.hinzufuegen-form { margin: 6px 0 4px; }
+.abschnitt-trenner .aufklapper > summary { min-height: 44px; }
+
+/* Hinweis-Banner mit Button */
+.hinweis-mit-aktion { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* Bestaetigungsdialog */
+.dialog {
+  width: min(440px, calc(100vw - 32px)); padding: 0; margin: auto;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-card);
+}
+.dialog::backdrop { background: rgba(0, 0, 0, 0.7); }
+.dialog-inhalt { padding: 20px; display: grid; gap: 10px; }
+.dialog-inhalt h2 { font-size: 17px; }
+.dialog-inhalt p { font-size: 15px; color: var(--text); overflow-wrap: break-word; }
+.dialog-inhalt p.hinweis-text { font-size: 13px; color: var(--muted); }
+.dialog-aktionen { display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+
+/* Meldung unten (ueber der Bottom-Navigation) */
+.meldung {
+  position: fixed; z-index: 30; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--nav-hoehe) + 20px + env(safe-area-inset-bottom));
+  width: max-content; max-width: calc(100vw - 32px);
+  padding: 12px 16px; border-radius: var(--radius-inner);
+  background: var(--surface-2); border: 1px solid var(--border-strong);
+  color: var(--text); font-size: 14px; cursor: pointer;
+}
+.meldung.fehler { border-color: #5a4217; color: var(--urgent); }
+
 /* --- iPad / ab 768 px: wie Desktop mit eingeklappter Icon-Sidebar ------- */
 @media (min-width: 768px) {
   .tabs {
@@ -324,4 +408,8 @@ details[open] > summary .chevron { transform: rotate(90deg); }
   .heute-raster { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 24px; align-items: start; }
   .raster { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 24px; }
   .detail { padding-left: 32px; padding-right: 32px; }
+  .liste > li.mit-aktion { display: flex; align-items: center; }
+  .liste > li.mit-aktion > .zeile { flex: 1; min-width: 0; padding-bottom: 14px; }
+  .zeile-aktion { padding: 0 24px 0 0; flex-shrink: 0; }
+  .meldung { bottom: calc(24px + env(safe-area-inset-bottom)); left: calc(50% + 36px); }
 }

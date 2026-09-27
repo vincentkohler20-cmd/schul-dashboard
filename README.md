@@ -1,9 +1,11 @@
-# Mobiles Schul-Dashboard (nur lesen)
+# Mobiles Schul-Dashboard
 
 Rein clientseitige WebApp, die deinen Obsidian-Vault direkt aus deinem
-Google Drive liest (OAuth mit Nur-Lese-Scope) und Aufgaben, Klausuren,
-Punkte und Wiederholungen anzeigt. **Es gibt keinen Schreib-Code** — nichts
-lässt sich aus dieser App heraus abhaken oder ändern.
+Google Drive liest und Aufgaben, Klausuren, Punkte und Lernbegleiter anzeigt.
+Seit 2026-09-27 kann sie auch **schreiben** (siehe „Schreibzugriff“ unten):
+Aufgaben abhaken/wieder öffnen und neu anlegen, Klausuren als geschrieben
+markieren/wieder öffnen und Punkte eintragen, Noten hinzufügen/bearbeiten/
+löschen. Timer, „Minuten nachtragen“ und Lernstand-Status bleiben Desktop-only.
 
 ## Einmaliges Setup (ca. 5–10 Minuten)
 
@@ -18,7 +20,7 @@ lässt sich aus dieser App heraus abhaken oder ändern.
 1. "APIs & Dienste" → "OAuth-Zustimmungsbildschirm".
 2. Nutzertyp: **"Extern"** wählen (ist trotzdem nur für dich nutzbar, siehe unten).
 3. App-Name (z.B. "Schul-Dashboard"), deine E-Mail als Support-E-Mail eintragen, speichern.
-4. Scopes-Schritt: kannst du überspringen/leer lassen (wird im Code angefragt).
+4. Scopes-Schritt: **„Scopes hinzufügen oder entfernen“** → `https://www.googleapis.com/auth/drive` (Google Drive, „Alle Dateien ansehen, bearbeiten, erstellen und löschen“) ergänzen → Aktualisieren → Speichern. Die App bleibt im Testing-Modus, ein Google-Review ist nicht nötig. (Bis 2026-09 stand hier nur `drive.readonly`.)
 5. **Testnutzer** hinzufügen: trage deine eigene Google-Adresse ein. Damit bleibt die App im "Testing"-Status — kein Google-Review nötig, funktioniert aber nur für die eingetragenen Testnutzer (also dich).
 
 ### 3. OAuth-Client-ID erstellen
@@ -50,9 +52,9 @@ Tipp: Auf dem iPhone/iPad kannst du die Seite über Safari → Teilen → "Zum H
 
 ## Wie es funktioniert
 
-- Beim Anmelden fordert die App per [Google Identity Services](https://developers.google.com/identity/oauth2/web/guides/overview) ein Zugriffstoken mit dem Scope `drive.readonly` an — das erlaubt **nur Lesen**, keine Schreib-API-Aufrufe sind damit überhaupt möglich.
+- Beim Anmelden fordert die App per [Google Identity Services](https://developers.google.com/identity/oauth2/web/guides/overview) ein Zugriffstoken mit dem Scope aus `DRIVE_SCOPE` in `app.js` an. Schreibfunktionen werden nur freigeschaltet, wenn das Token den vollen Scope `drive` (`SCHREIB_SCOPE`) hat; sonst bleibt die App lesend und zeigt „Bitte einmal neu anmelden, um Schreibrechte zu erteilen“ mit einem Button, der die Zustimmung einmalig neu anfragt.
 - Die App sucht deinen Vault-Ordner (Name aus `config.js`, Standard `ObsidianVault`) in deinem Drive, dann darin `Aufgaben/`, `Schule/Klausuren/`, `Schule/Noten/`.
-- Alle `.md`-Dateien werden **parallel** (nicht nacheinander) geladen und im Browser geparst (Frontmatter via [js-yaml](https://github.com/nodeca/js-yaml)) — dieselbe Logik wie im lokalen [dashboard.py](../obsidian-dashboard/dashboard.py), nur ohne die Schreib-Funktionen.
+- Alle `.md`-Dateien werden **parallel** (nicht nacheinander) geladen und im Browser geparst (Frontmatter via [js-yaml](https://github.com/nodeca/js-yaml), fest Version 4.1.0) — dieselbe Logik wie im lokalen [dashboard.py](../obsidian-dashboard/dashboard.py).
 - "🔄 Aktualisieren" lädt alle Daten neu (kein automatisches Polling, um die Drive-API-Quota zu schonen).
 
 ### Angemeldet bleiben
@@ -62,6 +64,21 @@ Das Zugriffstoken läuft nach ca. 1 Stunde ab. Die App versucht deshalb bei jede
 **Ehrliche Einschränkung:** Browser blockieren automatisch geöffnete Login-Popups grundsätzlich (Popup-Blocker-Schutz) — das lässt sich bei einer rein clientseitigen App ohne eigenen Server nicht zu 100% umgehen. In der Praxis heißt das: meistens bleibst du eingeloggt, aber gelegentlich (z.B. nach längerer Pause oder je nach Browser/Gerät) siehst du kurz wieder den "Mit Google anmelden"-Button — ein Tap reicht dann aber, da die eigentliche Erlaubnis schon erteilt ist (keine erneute Rechte-Abfrage).
 
 Über "Abmelden" (⏻-Icon) wird das absichtlich respektiert: danach versucht die App beim nächsten Öffnen bewusst **nicht** mehr automatisch, dich wieder einzuloggen.
+
+## Schreibzugriff (seit 2026-09-27)
+
+**Voraussetzung:** In `app.js` muss `DRIVE_SCOPE` auf `https://www.googleapis.com/auth/drive` stehen und der Scope im OAuth-Consent-Screen eingetragen sein (Setup Schritt 2.4). Beim ersten Start danach einmal „Neu anmelden“ tippen und zustimmen.
+
+- **Bestätigung:** Jede Änderung zeigt vorher einen Dialog, der konkret sagt, was passiert („Aufgabe ‚…‘ als erledigt markieren?“, „Punkte für Chemie Klausur-1 auf 11 setzen?“, „Note … löschen? Das lässt sich nicht rückgängig machen.“). Abbrechen, Esc oder Tippen daneben ändert nichts; ein Haken springt dann zurück.
+- **Eine zentrale Schreibfunktion** (`schreibeDatei()` in `app.js`): Datei direkt vor der Änderung frisch laden, Änderung auf den frischen Text anwenden, unmittelbar vor dem Hochladen die Revision (`headRevisionId`) erneut prüfen, dann per `PATCH …/upload/drive/v3/files/{id}?uploadType=media` hochladen. Neue Dateien (neue Monats-Aufgabendatei, fehlende `Noten.md`) über `erstelleDatei()`.
+- **Konfliktschutz:** Hat sich die Datei seit dem letzten Laden geändert (Obsidian am PC, Drive for Desktop, 14-Uhr-Aufgabe, WebUntis-Bot …), wird **nicht** geschrieben: „Datei wurde gerade woanders geändert – Daten neu geladen, bitte nochmal versuchen“.
+- **Zeilengenau:** Es ändert sich nur die betroffene Zeile bzw. der betroffene Abschnitt — Zeilenenden (CRLF/LF) und ein evtl. BOM bleiben erhalten. Die Änderungen entsprechen byte-genau den Desktop-Endpunkten (`/api/aufgabe-status`, `/api/klausur-status`, `/api/klausur-punkte`, Noten-Endpunkte); `Noten.md` wird wie am Desktop per YAML neu erzeugt (gleiche Schreibweise wie PyYAML).
+- **Selbstbeschränkung auf den Vault:** Der `drive`-Scope erlaubt technisch Schreibzugriff auf den ganzen Drive. Die App beschreibt aber nur Dateien, deren ID beim Laden aus dem Vault-Ordner (`VAULT_FOLDER_ID` und Unterordner) kam, und legt neue Dateien nur in bekannten Vault-Ordnern an.
+- **Neue Aufgaben** landen als neuer Abschnitt am Ende von `Aufgaben/Aufgaben-JJJJ-MM.md` des Deadline-Monats (Datei wird bei Bedarf angelegt). Titel, die mit „Klausur“ beginnen, werden abgelehnt (Klausuren gehören in den Klausuren-Tab). Detail-Notizen in `Schule/Hausaufgaben/` legt die App nicht an.
+
+### Auf fremden Geräten abmelden
+
+Mit Schreibrechten kann jeder, der die geöffnete App in die Hände bekommt, deinen Vault ändern (und das Token erlaubt technisch Zugriff auf deinen ganzen Drive). Auf fremden/geteilten Geräten (z.B. Schul-iPad eines anderen) nach der Nutzung **immer über ⏻ abmelden** — das widerruft das Token und verhindert den automatischen Wieder-Login.
 
 ## Falls sich der Vault nochmal verschiebt
 
