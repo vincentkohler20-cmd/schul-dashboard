@@ -104,7 +104,9 @@ let schreibrechte = false;    // hat das aktuelle Token den vollen drive-Scope?
 // gespeichert. Die Rueckkehr-Adresse muss in der Google Cloud Console als
 // "Autorisierte Weiterleitungs-URI" eingetragen sein (siehe README).
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-const REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, "");
+// Immer ".../schul-dashboard/" - egal ob ueber index.html (Home-Bildschirm,
+// start_url) oder ohne abschliessenden Schraegstrich aufgerufen.
+const REDIRECT_URI = location.origin + location.pathname.replace(/index\.html$/, "").replace(/\/?$/, "/");
 const STILL_SPERRE_MS = 60 * 1000; // hoechstens ein stiller Versuch pro Minute (kein Weiterleitungs-Kreisel)
 
 function zufallsHex(bytes = 16) {
