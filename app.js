@@ -12,9 +12,22 @@ const LERNSTAND_WERTE = new Set(["verstanden", "teilweise", "offen"]);
 const KLAUSUR_COUNTDOWN_ROT_TAGE = 3;
 const KLAUSUR_COUNTDOWN_GELB_TAGE = 7;
 const KLAUSUR_BALD_TAGE = 7; // Aufgaben mit Klausur im Fach in <= X Tagen -> Badge "Klausur bald"
-const LK_FAECHER = new Set(["Mathe-LK", "Physik-LK", "Geschichte"]);
-const GEWICHT_LK = { schriftlich: 0.4, muendlich: 0.6 };
-const GEWICHT_GK = { schriftlich: 0.3, muendlich: 0.7 };
+const LK_FAECHER = new Set(["Mathe-LK", "Physik-LK", "Geschichte"]); // nur noch LK/GK-Anzeige
+// Halbjahre + Gewichtung schriftlich/muendlich - identisch zu HALBJAHRE und
+// GEWICHTUNG in dashboard.py halten! Halbjahr gilt ab "beginn" (ISO-Datum).
+// "*" = alle Faecher ohne eigenen Eintrag; fehlt ein Wert -> keine Gesamtpunktzahl.
+const HALBJAHRE = [
+  ["12.1", "2026-08-01"],
+  ["12.2", "2027-02-01"],
+  ["13.1", "2027-08-01"],
+  ["13.2", "2028-02-01"],
+];
+const GEWICHTUNG = {
+  "12.1": { "*": [0.5, 0.5] }, // zwei Klausuren je Fach
+  "12.2": { Geschichte: [1 / 3, 2 / 3], Deutsch: [0.4, 0.6] },
+  "13.1": { Geschichte: [0.4, 0.6] },
+  "13.2": { Geschichte: [0.4, 0.6] },
+};
 const WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
 
 const BEGLEITER_DATEI_NAME = "Begleiter-Uebersicht.md"; // liegt in Schule/ im Vault, wird von der Begleiter-Automatik geschrieben
@@ -788,9 +801,26 @@ function sammleSchriftlichPunkteProFach(klausuren, notenProFach) {
   return ergebnis;
 }
 
+// Wie aktuelles_halbjahr()/gewicht_fuer()/gewicht_text() in dashboard.py.
+function aktuellesHalbjahr(heute = new Date()) {
+  const heuteIso = isoDatum(heute);
+  let kuerzel = HALBJAHRE[0][0];
+  for (const [name, beginn] of HALBJAHRE) if (heuteIso >= beginn) kuerzel = name;
+  return kuerzel;
+}
+
+function gewichtFuer(fachOrdner, heute) {
+  const halbjahr = aktuellesHalbjahr(heute);
+  const tabelle = GEWICHTUNG[halbjahr] || {};
+  const werte = tabelle[fachOrdner] || tabelle["*"];
+  return werte ? { schriftlich: werte[0], muendlich: werte[1], halbjahr } : null;
+}
+
+const gewichtText = (g) => `${Math.round(g.schriftlich * 100)}/${Math.round(g.muendlich * 100)}`;
+
 function berechneGesamtpunktzahl(fachOrdner, schriftlich, muendlich) {
-  if (schriftlich == null || muendlich == null) return null;
-  const gewicht = LK_FAECHER.has(fachOrdner) ? GEWICHT_LK : GEWICHT_GK;
+  const gewicht = gewichtFuer(fachOrdner);
+  if (schriftlich == null || muendlich == null || !gewicht) return null;
   return schriftlich * gewicht.schriftlich + muendlich * gewicht.muendlich;
 }
 
@@ -2212,11 +2242,15 @@ function renderPunkteTab() {
     const muendlich = muendlicheListe.length ? muendlicheListe[muendlicheListe.length - 1] : null;
     const schriftlichAvg = schriftlichInfo ? schriftlichInfo.durchschnitt : null;
     const gesamt = berechneGesamtpunktzahl(fach, schriftlichAvg, muendlich ? muendlich.punkte : null);
-    const gewicht = LK_FAECHER.has(fach) ? GEWICHT_LK : GEWICHT_GK;
+    const gewicht = gewichtFuer(fach);
+    const halbjahr = aktuellesHalbjahr();
     const kursart = LK_FAECHER.has(fach) ? "LK" : "GK";
+    const pill = gewicht
+      ? `<span class="pill" title="Gewichtung schriftlich/mündlich in ${halbjahr}">${kursart} · ${gewichtText(gewicht)}</span>`
+      : `<span class="pill" title="Gewichtung ${halbjahr} noch unbekannt">${kursart} · ${halbjahr} offen</span>`;
     return `
       <section class="karte">
-        <div class="karte-kopf"><h2>${esc(fach)}</h2><span class="pill">${kursart} · ${Math.round(gewicht.schriftlich * 100)}/${Math.round(gewicht.muendlich * 100)}</span></div>
+        <div class="karte-kopf"><h2>${esc(fach)}</h2>${pill}</div>
         <div class="karte-inhalt">
           <div class="werte">
             <div class="wert-zeile"><span class="label">Schriftlich</span><span>${schriftlichAvg !== null ? `<span class="wert">${schriftlichAvg.toFixed(1)}</span> <span class="hinweis-text">Ø aus ${schriftlichInfo.anzahl}</span>` : `<span class="hinweis-text">noch keine Note</span>`}</span></div>
@@ -2226,7 +2260,9 @@ function renderPunkteTab() {
             <div class="kpi-label">Gesamt</div>
             ${gesamt !== null
               ? `<div class="gesamt-zeile"><span class="gesamt">${Math.round(gesamt)}</span><span class="gesamt-genau">genau ${gesamt.toFixed(1)} von 15</span></div>`
-              : `<p class="hinweis-text" style="margin-top:6px">Noch unvollständig – schriftliche und/oder mündliche Note fehlt.</p>`}
+              : !gewicht
+                ? `<p class="hinweis-text" style="margin-top:6px">Gewichtung ${halbjahr} noch unbekannt – keine Gesamtpunktzahl.</p>`
+                : `<p class="hinweis-text" style="margin-top:6px">Noch unvollständig – schriftliche und/oder mündliche Note fehlt.</p>`}
           </div>
           ${notenVerwaltungHtml(fach)}
         </div>
